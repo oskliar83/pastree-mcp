@@ -1126,6 +1126,25 @@ gap between the answers and the truth.
      binding gaps are PasTree's to close: an overload dcc picks by an
      AnsiString or an interface argument, and the `uses` order between an
      own unit and an RTL one declaring the same name.
+
+     `symbol` (0.54.0, PasTree 0.194.0's `CheckUnusedSymbols`) asks the
+     rule of named declarations alone - "is this one dead now?" after a
+     change. Asked of a unit, the answer buries it among the unit's rows
+     (a hundred record fields with a `but`), and a declaration with no row
+     may be used or merely not weighed - the agent cannot tell which. Each
+     name gets a verdict: unused (the row, its `but` kept), used (`callers`
+     or `references` for where - a routine used only by a bare
+     `inherited;` is in `callers` alone), not weighed and why with the tool
+     that follows it (a virtual method: `callers`; published: the form
+     files), a library declaration or a local not weighed at all, a name
+     that resolves to nothing or to several declarations refused in its
+     place. Names joined by commas, or a list with `file` + `line` + `name`
+     objects; an overloaded name is each overload; with `file`, every
+     declaration of the name in that unit. Only the targets' units are
+     collected, restricted to the targets and the overloads beside each
+     (the doubt "another overload is used" needs the siblings weighed);
+     the group-wide passes are a whole run's, so a verdict and the unit's
+     run agree.
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.

@@ -14913,6 +14913,272 @@ begin
   end;
 end;
 
+const
+  // Why a declaration asked about by name is not weighed (TPasUnusedSkip),
+  // with where to look instead.
+  cUnusedSkipWhy: array[TPasUnusedSkip] of string = (
+    'published - a form file or RTTI may reach it by name; `references` '
+      + 'reads the form files',
+    'a virtual, dynamic, abstract, override or message method - a call '
+      + 'through its base may run it; `callers` follows those',
+    'a member of an interface - `callers` follows the calls through it',
+    'a method an interface of its class names - a call through the '
+      + 'interface may run it; `callers` follows those',
+    'an operator - expressions use it, not its name',
+    'a class constructor or destructor - its unit runs it',
+    'an attribute''s constructor - the attribute naming its class runs it',
+    'the for-in protocol - `for ... in` runs it',
+    'declared in a generated unit');
+
+  MAX_LINT_SYMBOLS = 50;
+
+{ `lint` with `symbol`: unused-symbol of the declarations named, one verdict
+  each - "is this one dead now?" after a change, where the rows of its whole
+  unit (a hundred record fields with a `but`) bury it, and a declaration with
+  no row may be used or merely not weighed. PasTree's CheckUnusedSymbols in
+  every analysis holding the declaration: unused when each of them finds it
+  so, used when one uses it. A name that resolves to nothing, or to several
+  declarations, says so in its place; the others answer. }
+function LintSymbols(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
+type
+  TAsked = record
+    Text: string;          // the name as asked, for a refusal
+    Target: TTarget;
+    Error: string;
+    Verdict: TPasUnusedVerdict;
+    Skip: TPasUnusedSkip;
+    Row: TPasUnusedSymbol;
+    RowA: TMcpAnalysis;
+    Unused, Used, Held: Integer;
+  end;
+var
+  LV: TJSONValue;
+  LItems: TObjectList<TJSONObject>;
+  LOne: TJSONObject;
+  LAsked: TList<TAsked>;
+  LA1: TAsked;
+  LKeys: TArray<TPasSymbolKey>;
+  LAt: TArray<Integer>;
+  LKey: TPasSymbolKey;
+  LChecks: TArray<TPasUnusedCheck>;
+  LTargets: TArray<TTarget>;
+  LFile, LText, LWhere: string;
+  LCounts: array[0..3] of Integer;  // unused, used, not weighed, not found
+  LSb: TStringBuilder;
+begin
+  LV := AArgs.GetValue('symbol');
+  LFile := '';
+  if ArgStr(AArgs, 'file') <> '' then
+  begin
+    if Length(LintFilesArg(AWs, AArgs)) > 1 then
+      raise EToolError.Create('with `symbol`, `file` is the one unit its '
+        + 'names are looked for in');
+    LFile := ArgStr(AArgs, 'file');
+  end;
+  if ArgStr(AArgs, 'in') <> '' then
+    raise EToolError.Create('with `symbol`, `in` does not narrow anything - '
+      + 'give `file` for the unit the names are declared in');
+  LItems := TObjectList<TJSONObject>.Create(True);
+  LAsked := TList<TAsked>.Create;
+  LSb := TStringBuilder.Create;
+  try
+    // Names joined by commas (or |, ;), or a list of names and of objects
+    // with `file` + `line` + `name` - the place a refusal listed.
+    if LV is TJSONArray then
+    begin
+      for var LItem in TJSONArray(LV) do
+        if LItem is TJSONObject then
+          LItems.Add(TJSONObject(LItem.Clone))
+        else if Trim(LItem.Value) <> '' then
+          LItems.Add(TJSONObject.Create(TJSONPair.Create('symbol',
+            Trim(LItem.Value))));
+    end
+    else if LV <> nil then
+      for var LName in LV.Value.Split([',', ';', '|', ' ', #13, #10],
+        TStringSplitOptions.ExcludeEmpty) do
+        LItems.Add(TJSONObject.Create(TJSONPair.Create('symbol', LName)));
+    if LItems.Count = 0 then
+      raise EToolError.Create('`symbol` names no declaration - give names '
+        + '(TFoo.Bar) joined by commas');
+    if LItems.Count > MAX_LINT_SYMBOLS then
+      raise EToolError.CreateFmt('%d names - at most %d in one call; for '
+        + 'the whole of a unit give `file` alone', [LItems.Count,
+        MAX_LINT_SYMBOLS]);
+    // Each name resolved - an overloaded routine's name to each overload.
+    for LOne in LItems do
+    begin
+      if (LFile <> '') and (LOne.GetValue('file') = nil) then
+        LOne.AddPair('file', LFile);
+      LText := ArgStr(LOne, 'symbol');
+      if LText = '' then
+        LText := ArgStr(LOne, 'file') + ':' + ArgStr(LOne, 'line') + ' ' +
+          ArgStr(LOne, 'name');
+      try
+        // A name with `file`: every declaration of it in that unit - each is
+        // asked about (three Reset of three classes, one verdict each).
+        if NamedNotPlaced(LOne) then
+          LTargets := NamedInFile(AWs, LOne)
+        else
+          LTargets := ResolveOneOrOverloads(AWs, LOne);
+        for var LT in LTargets do
+        begin
+          LA1 := Default(TAsked);
+          LA1.Text := LText;
+          LA1.Target := LT;
+          LAsked.Add(LA1);
+        end;
+      except
+        on E: EToolError do
+        begin
+          LA1 := Default(TAsked);
+          LA1.Text := LText;
+          LA1.Error := E.Message;
+          LAsked.Add(LA1);
+        end;
+      end;
+    end;
+    // One check per analysis, of every declaration asked about it holds.
+    for var LA in AWs.Analyses do
+    begin
+      if LA.Proj = nil then
+        Continue;
+      LKeys := nil;
+      LAt := nil;
+      for var LI := 0 to LAsked.Count - 1 do
+      begin
+        LA1 := LAsked[LI];
+        if (LA1.Error <> '') or not LA1.Target.Own or
+           (LA.Index > High(LA1.Target.Ids)) or
+           (LA1.Target.Ids[LA.Index].Mid < 0) or
+           not QKey(LA, LA1.Target.Ids[LA.Index].Mid,
+             LA1.Target.Ids[LA.Index].Sym, LKey) then
+          Continue;
+        LKeys := LKeys + [LKey];
+        LAt := LAt + [LI];
+      end;
+      if LKeys = nil then
+        Continue;
+      LChecks := LA.WS.CheckUnusedSymbols(LKeys);
+      AWs.QueryDone(LA);
+      for var LI := 0 to High(LChecks) do
+      begin
+        LA1 := LAsked[LAt[LI]];
+        case LChecks[LI].Verdict of
+          uvUnused:
+            begin
+              Inc(LA1.Held);
+              Inc(LA1.Unused);
+              if LA1.RowA = nil then
+              begin
+                LA1.Row := LChecks[LI].Row;
+                LA1.RowA := LA;
+              end;
+            end;
+          uvUsed:
+            begin
+              Inc(LA1.Held);
+              Inc(LA1.Used);
+            end;
+          uvSkipped:
+            begin
+              Inc(LA1.Held);
+              LA1.Verdict := uvSkipped;
+              LA1.Skip := LChecks[LI].Skip;
+            end;
+          uvNotCovered:
+            begin
+              Inc(LA1.Held);
+              if LA1.Verdict <> uvSkipped then
+                LA1.Verdict := uvNotCovered;
+            end;
+        end;
+        LAsked[LAt[LI]] := LA1;
+      end;
+    end;
+    // The verdicts: unused only when every analysis holding it finds it so.
+    FillChar(LCounts, SizeOf(LCounts), 0);
+    for var LI := 0 to LAsked.Count - 1 do
+    begin
+      LA1 := LAsked[LI];
+      if LA1.Error <> '' then
+      begin
+        Inc(LCounts[3]);
+        Continue;
+      end;
+      if LA1.Used > 0 then
+      begin
+        LA1.Verdict := uvUsed;
+        Inc(LCounts[1]);
+      end
+      else if (LA1.Unused > 0) and (LA1.Unused = LA1.Held) then
+      begin
+        LA1.Verdict := uvUnused;
+        Inc(LCounts[0]);
+      end
+      else
+      begin
+        if not (LA1.Verdict in [uvSkipped, uvNotCovered]) then
+          LA1.Verdict := uvNotFound;   // own: not held; or a library one
+        Inc(LCounts[2]);
+      end;
+      LAsked[LI] := LA1;
+    end;
+    LSb.AppendLine(Format('unused-symbol of %s: %d unused, %d used, %d not '
+      + 'weighed%s', [Plural(LAsked.Count, 'declaration'), LCounts[0],
+      LCounts[1], LCounts[2], IfThen(LCounts[3] > 0, Format(', %d not '
+      + 'resolved', [LCounts[3]]), '')]));
+    for LA1 in LAsked do
+    begin
+      if LA1.Error <> '' then
+      begin
+        LSb.AppendLine(Format('%s: %s', [LA1.Text, LA1.Error]));
+        Continue;
+      end;
+      LWhere := Format('%s:%d:%d: ', [AWs.RelPath(LA1.Target.DeclFile),
+        LA1.Target.DeclLine, LA1.Target.DeclCol]);
+      case LA1.Verdict of
+        uvUnused:
+          begin
+            LText := Format('unused %s (%s) - nothing in the group uses it',
+              [LA1.Row.Name, HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId),
+              LA1.Row.Sym)]);
+            if LA1.Row.Doubts <> nil then
+              LText := LText + ', but ' + string.Join('; ', LA1.Row.Doubts);
+            LSb.AppendLine(Format('%s:%d:%d: %s', [AWs.RelPath(
+              LA1.Row.FileName), LA1.Row.Line, LA1.Row.Col, LText]));
+          end;
+        uvUsed:
+          // A routine may be used by a bare `inherited;` alone, which
+          // `references` does not list and `callers` does.
+          LSb.AppendLine(Format('%sused %s (%s)%s - %s lists where', [LWhere,
+            LA1.Target.Name, LA1.Target.Head, IfThen(LA1.Unused > 0,
+            Format(' - by %d of the %d configurations holding it', [LA1.Used,
+            LA1.Held]), ''), IfThen(IsRoutineTarget(LA1.Target), '`callers`',
+            '`references`')]));
+        uvSkipped:
+          LSb.AppendLine(Format('%snot weighed %s (%s) - %s', [LWhere,
+            LA1.Target.Name, LA1.Target.Head, cUnusedSkipWhy[LA1.Skip]]));
+        uvNotCovered:
+          LSb.AppendLine(Format('%snot weighed %s (%s) - unused-symbol weighs '
+            + 'types, routines, unit and class variables and constants, '
+            + 'fields and properties; a local or a parameter is the '
+            + 'compiler''s hint; `references` answers for the rest', [LWhere,
+            LA1.Target.Name, LA1.Target.Head]));
+      else
+        LSb.AppendLine(Format('%snot weighed %s (%s) - %s', [LWhere,
+          LA1.Target.Name, LA1.Target.Head, IfThen(LA1.Target.Own,
+          'no analysis holds its unit', 'a library declaration: '
+          + 'unused-symbol weighs the group''s own units')]));
+      end;
+    end;
+    Result := LSb.ToString.TrimRight;
+  finally
+    LSb.Free;
+    LAsked.Free;
+    LItems.Free;
+  end;
+end;
+
 function ToolLint(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
 var
   LRules, LAskedFiles: TArray<string>;
@@ -14940,6 +15206,16 @@ begin
       raise EToolError.CreateFmt('unknown rule `%s` - the rules: %s',
         [LR.Trim, string.Join(', ', LINT_ALL_RULES)]);
     LRules := LRules + [LowerCase(LR.Trim)];
+  end;
+  if (AArgs.GetValue('symbol') <> nil) and
+     not (AArgs.GetValue('symbol') is TJSONNull) then
+  begin
+    if (LRules <> nil) and ((Length(LRules) > 1) or
+       not SameText(LRules[0], LINT_UNUSED_SYMBOL)) then
+      raise EToolError.Create('`symbol` asks unused-symbol of the '
+        + 'declarations named - the uses rules are asked of units: give '
+        + '`file` without `symbol`');
+    Exit(LintSymbols(AWs, AArgs));
   end;
   if LRules = nil then
     LRules := LINT_RULES;
@@ -20852,11 +21128,17 @@ const
     + '(published members, virtual and interface methods, attributes, '
     + 'for-in), and a `but` names what the index cannot settle (a branch '
     + 'not compiled or a string spelling it, another overload in use, a '
-    + 'namesake in another unit). Run `compile` after acting on it.",'
+    + 'namesake in another unit). `symbol` asks it of the declarations named '
+    + 'alone, each answered unused, used, or not weighed and why (a virtual '
+    + 'method: `callers`). Run `compile` after acting on it.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"rules":{"type":"string","description":"Comma-separated: '
     + 'unused-uses, uses-to-implementation (the default: both), '
     + 'unused-symbol"},'
+    + '"symbol":{"description":"unused-symbol of these declarations alone: '
+    + 'names (TFoo.Bar) joined by commas, or a list of names and '
+    + '{\"file\",\"line\",\"name\"}; an overloaded name is each overload. '
+    + 'With `file`, the names declared in that unit"},'
     + '"file":{"type":"string","description":"Only this unit - or these, joined by commas: one call checks several units for the cost of one, where calls made at once wait for each other"},'
     + '"in":{"type":"string","description":"Only the units whose path '
     + 'relative to the group contains this or matches it as a wildcard '
