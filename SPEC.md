@@ -1155,6 +1155,28 @@ gap between the answers and the truth.
      the like taken for theirs) the unused-symbol rows of those kinds,
      leaving the uses rules' rows, and alone asks unused-symbol. Neither
      goes with `symbol`, whose every declaration answers with its `but`.
+
+     The rows rows make (0.56.0, PasTree 0.196.0's `TPasUnusedHow`): a
+     declaration every use of which sits in rows - their bodies, their
+     declarations (a property's `read GetX`, a field's type), its own body -
+     is a row, "used only by unused X, Y - it goes with them" ("only its own
+     body uses it" for recursion); a field or a unit or class variable whose
+     every other use is the target of a plain `:=` is a row, "only assigned
+     (where), never read" - not a record's field (the record is read whole)
+     nor an `absolute` one. Both are decided together to a fixed point (two
+     routines calling only each other are two rows). A `but` of their own:
+     an assignment whose value code computes (a call, a property - removing
+     it drops that), an interface held (it keeps the object alive), a row
+     using it with a `but`. A use the index cannot place (an include file,
+     a bare `inherited;`, a form) keeps it, as does a declaration bound more
+     than 16 times (its references are not searched). With `symbol` the
+     declarations the uses of one asked about sit in are weighed too, round
+     by round (4 rounds, 300 declarations): a getter asked alone finds its
+     property. The 2026-10-20 dead-code session on the client group: of the
+     20 declarations its agents found dead by `references` and Grep, 13
+     were rows; the other 6 - two getters of dead properties, four fields
+     only assigned - were "used" until this. The header counts them:
+     "of them N used only by unused ones, M only assigned".
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.

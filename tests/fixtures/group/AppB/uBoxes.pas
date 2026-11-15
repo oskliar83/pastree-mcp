@@ -218,4 +218,39 @@ begin
     Exit;
 end;
 
+// Dead with the dead (lint unused-symbol): a getter only an unused property
+// reads, a method calling only itself, fields only assigned - one by a
+// constructor call; the class that call creates is used by live code.
+type
+  TStampHelp = class
+  end;
+  TDeadHost = class
+  private
+    FHelp: TStampHelp;
+    FStamp: Integer;
+    function GetSize: Integer;
+    procedure Spin;
+  public
+    procedure Touch;
+    property Size: Integer read GetSize;
+  end;
+
+function TDeadHost.GetSize: Integer;
+begin
+  Result := 0;
+end;
+
+procedure TDeadHost.Spin;
+begin
+  Spin;
+end;
+
+procedure TDeadHost.Touch;
+begin
+  FHelp := TStampHelp.Create;
+  FStamp := 1;
+end;
+
+initialization
+  TDeadHost(nil).Touch;
 end.

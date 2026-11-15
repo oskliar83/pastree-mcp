@@ -353,6 +353,7 @@ lint {"rules":"unused-symbol","file":"Shared/uShapes.pas"}
 lint {"symbol":"NeverCalled, TPlainBox.Reset, TShapeBox.Changed, TShapeBox.BoxClick, TCounter.Run, TBufRec.Buf, NoSuchThing, TStringList.Sort"}
 lint {"symbol":"Reset","file":"AppB/uBoxes.pas"}
 lint {"symbol":["TCounter.Bump",{"file":"AppB/uBoxes.pas","line":186,"name":"Run"},{"file":"AppB/uBoxes.pas","line":189,"name":"AValue"}]}
+lint {"symbol":"TDeadHost.GetSize, TDeadHost.Spin, TDeadHost.FHelp, TDeadHost.FStamp, TStampHelp, TDeadHost.Touch"}
 lint {"symbol":"NeverCalled","rules":"unused-uses"}
 lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas","kinds":"field, procedure","sure":true,"limit":3}
 lint {"file":"AppB/uBoxes.pas","kinds":"routine"}

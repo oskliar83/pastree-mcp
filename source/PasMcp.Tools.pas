@@ -13202,6 +13202,7 @@ type
     // unused-symbol: what the declaration is, as `kinds` names it (type,
     // routine, var, const, field, property); '' for the uses rules.
     Kind: string;
+    How: TPasUnusedHow;        // unused-symbol: why a row is one
   end;
 
   // What lint reads of one analysis more than once: the interface names of
@@ -14831,6 +14832,45 @@ const
   makes the library bodies the search needs full). A declaration is a row
   only when every analysis holding its unit finds it unused: one that only
   another member's defines compile is used there. }
+// The text of an unused-symbol row after its name and head: why it is one
+// (TPasUnusedHow) and its doubts. One used only by rows names them, at most
+// five ("itself" for recursion); one only assigned names where, at most
+// three.
+function UnusedWhy(const ARow: TPasUnusedSymbol): string;
+
+  function Names(const AList: TArray<string>; AMax: Integer): string;
+  begin
+    Result := '';
+    for var LI := 0 to Min(High(AList), AMax - 1) do
+      Result := Result + IfThen(Result <> '', ', ') + IfThen(AList[LI] = '',
+        'itself', AList[LI]);
+    if Length(AList) > AMax then
+      Result := Result + Format(' and %d more', [Length(AList) - AMax]);
+  end;
+
+begin
+  case ARow.How of
+    uhOnlyByUnused:
+      if (Length(ARow.By) = 1) and (ARow.By[0] = '') then
+        Result := 'only its own body uses it'
+      else
+        Result := Format('used only by unused %s - it goes with them',
+          [Names(ARow.By, 5)]);
+    uhOnlyWritten:
+      begin
+        Result := Format('only assigned (%s), never read', [Names(ARow.Writes,
+          3)]);
+        if ARow.By <> nil then
+          Result := Result + Format('; its other uses are in unused %s',
+            [Names(ARow.By, 5)]);
+      end;
+  else
+    Result := 'nothing in the group uses it';
+  end;
+  if ARow.Doubts <> nil then
+    Result := Result + ', but ' + string.Join('; ', ARow.Doubts);
+end;
+
 procedure LintUnusedSymbols(AWs: TMcpWorkspace; const AFiles: TArray<string>;
   ARows: TList<TLintRow>; out ASkipped: string);
 var
@@ -14897,11 +14937,10 @@ begin
       LRow.Line := LS.Line;
       LRow.Col := LS.Col;
       LRow.Rule := LINT_UNUSED_SYMBOL;
-      LRow.Text := Format('%s (%s) - nothing in the group uses it', [LS.Name,
-        HeadOf(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym)]);
-      if LS.Doubts <> nil then
-        LRow.Text := LRow.Text + ', but ' + string.Join('; ', LS.Doubts);
+      LRow.Text := Format('%s (%s) - %s', [LS.Name,
+        HeadOf(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym), UnusedWhy(LS)]);
       LRow.Doubt := LS.Doubts <> nil;
+      LRow.How := LS.How;
       case LS.Kind of
         skType: LRow.Kind := 'type';
         skRoutine: LRow.Kind := 'routine';
@@ -15153,11 +15192,9 @@ begin
       case LA1.Verdict of
         uvUnused:
           begin
-            LText := Format('unused %s (%s) - nothing in the group uses it',
-              [LA1.Row.Name, HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId),
-              LA1.Row.Sym)]);
-            if LA1.Row.Doubts <> nil then
-              LText := LText + ', but ' + string.Join('; ', LA1.Row.Doubts);
+            LText := Format('unused %s (%s) - %s', [LA1.Row.Name,
+              HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId), LA1.Row.Sym),
+              UnusedWhy(LA1.Row)]);
             LSb.AppendLine(Format('%s:%d:%d: %s', [AWs.RelPath(
               LA1.Row.FileName), LA1.Row.Line, LA1.Row.Col, LText]));
           end;
@@ -15423,6 +15460,18 @@ begin
         end;
       if LKey <> '' then
         LSb.AppendLine('unused-symbol by kind: ' + LKey);
+      // The rows the rows make: dead with them, or holding what nothing reads.
+      var LByRows := 0;
+      var LWritten := 0;
+      for var LRow in LArr do
+        if LRow.How = uhOnlyByUnused then
+          Inc(LByRows)
+        else if LRow.How = uhOnlyWritten then
+          Inc(LWritten);
+      if LByRows + LWritten > 0 then
+        LSb.AppendLine(Format('of them %d used only by unused ones, %d only '
+          + 'assigned - removed together with the rows they name', [LByRows,
+          LWritten]));
     end;
     // `sure` and `kinds` narrow the rows listed; the header counts all.
     if LSure or (LKinds <> nil) then
@@ -21239,7 +21288,10 @@ const
     + '(published members, virtual and interface methods, attributes, '
     + 'for-in), and a `but` names what the index cannot settle (a branch '
     + 'not compiled or a string spelling it, another overload in use, a '
-    + 'namesake in another unit). `symbol` asks it of the declarations named '
+    + 'namesake in another unit). A declaration used only by rows (or by '
+    + 'itself) is a row too - used only by unused X, it goes with them - '
+    + 'and so is a field or variable only assigned, never read. `symbol` '
+    + 'asks it of the declarations named '
     + 'alone, each answered unused, used, or not weighed and why (a virtual '
     + 'method: `callers`). `sure` lists only the rows with no `but`, `kinds` '
     + 'the unused-symbol rows of those kinds (routine, type, field...). Run '
