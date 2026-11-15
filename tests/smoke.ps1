@@ -738,7 +738,7 @@ Check 'lint none in' (Block $b 'lint {"in":"AppF","rules":"uses-to-implementatio
 # designer puts those back on save (PasTree.Sema.Lint, 0.93.3).
 Check 'lint form file' (Block $b 'lint {"file":"AppF/uMainForm.pas"}') @('no findings (unused-uses, uses-to-implementation) in AppF\uMainForm.pas')
 Check 'lint count only' (Block $b 'lint {"limit":0}') @('15 findings in 9 files of 44 own units: unused-uses 12, uses-to-implementation 3 - 7 with a "but"') @('AppB\', 'more (raise')
-Check 'lint cut' (Block $b 'lint {"limit":2}') @('AppB\uBoxes.pas:10:19: unused-uses uColors', '... 13 more (raise `limit`, or narrow with `file`, `in` or `rules`)')
+Check 'lint cut' (Block $b 'lint {"limit":2}') @('AppB\uBoxes.pas:10:19: unused-uses uColors', '... 13 more (raise `limit`, or narrow with `file`, `in`, `rules`, `kinds` or `sure`)')
 Check 'lint together' (Block $b 'lint {"file":"AppB/uLintBase.pas"}') @('AppB\uLintBase.pas:10:3: unused-uses uLintReg - no name of it is used here; but removed with the other unused-uses rows that have no "but", it leaves uLintReg (initialization) out of AppB - keep it, or another row saying so')
 # uLintDef lists uLintOnce under FIXTURE_A, which the shared analysis takes
 # from AppA: AppB, built without it, reaches uLintOnce through uLintLast alone.
@@ -770,6 +770,17 @@ Check 'lint symbol' (Block $b 'lint {"symbol":"NeverCalled, TPlainBox.Reset') @(
 Check 'lint symbol in file' (Block $b 'lint {"symbol":"Reset","file":"AppB/uBoxes.pas"}') @('unused-symbol of 3 declarations: 2 unused, 1 used, 0 not weighed', 'AppB\uBoxes.pas:146:15: used TPlainBox.Reset', 'AppB\uBoxes.pas:150:15: unused TPlainChild.Reset', 'AppB\uBoxes.pas:154:15: unused TPlainOther.Reset') @('ambiguous', 'TBase.Reset')
 Check 'lint symbol list' (Block $b 'lint {"symbol":["TCounter.Bump"') @('unused-symbol of 3 declarations: 1 unused, 1 used, 1 not weighed', 'AppB\uBoxes.pas:183:15: used TCounter.Bump (procedure)', 'AppB\uBoxes.pas:186:15: unused TCounter.Run (procedure)', 'AppB\uBoxes.pas:189:29: not weighed TCounter.Bump.AValue (parameter) - unused-symbol weighs types')
 Check 'lint symbol uses rule' (Block $b 'lint {"symbol":"NeverCalled","rules":"unused-uses"}') @('`symbol` asks unused-symbol of the declarations named')
+# `sure` and `kinds`: the rows listed narrowed, the header counting all and
+# unused-symbol's rows by kind; `kinds` alone asks unused-symbol (`procedure`
+# read as routine), `sure` of the uses rules too; a unit with none, an
+# unknown kind, `kinds` beside a uses rule alone and beside `symbol` refused.
+Check 'lint sure kinds' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas","kinds":"field, procedure","sure":true') @('19 findings in 1 file of 1 own unit: unused-symbol 19 - 3 with a "but"', 'unused-symbol by kind: type 11, routine 5, field 3', 'listed: 5 of them - without a "but", unused-symbol of kind field, routine', 'AppB\uBoxes.pas:71:14: unused-symbol TWideBox.Configure (function)', 'AppB\uBoxes.pas:103:7: unused-symbol TOuterBox.TInnerBox.Depth (field)', '... 2 more (raise `limit`') @('TBufRec.Buf', 'NeverCalled', 'TBigBox (class)')
+Check 'lint kinds alone' (Block $b 'lint {"file":"AppB/uBoxes.pas","kinds":"routine"}') @('19 findings in 1 file of 1 own unit: unused-symbol 19', 'listed: 5 of them - unused-symbol of kind routine', 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but', 'AppB\uBoxes.pas:186:15: unused-symbol TCounter.Run (procedure)') @('(class) -', '(field) -', 'unused-uses')
+Check 'lint sure uses' (Block $b 'lint {"file":"AppB/uLint.pas","sure":true}') @('6 findings in 1 file of 1 own unit: unused-uses 4, uses-to-implementation 2 - 3 with a "but"', 'listed: 3 of them - without a "but"', 'AppB\uLint.pas:11:3: unused-uses uColors - no name of it is used here') @('uLintInit', 'uBoxes', 'by kind')
+Check 'lint sure none' (Block $b 'lint {"rules":"unused-symbol","file":"Shared/uShapes.pas","sure":true}') @('no findings (unused-symbol) in Shared\uShapes.pas') @('listed:')
+Check 'lint kinds unknown' (Block $b 'lint {"file":"AppB/uBoxes.pas","kinds":"nope"}') @('unknown kind `nope` - the kinds: type, routine, var, const, field, property')
+Check 'lint kinds uses rule' (Block $b 'lint {"rules":"unused-uses","kinds":"field"}') @('`kinds` narrows the rows of unused-symbol - add it to `rules`')
+Check 'lint symbol sure' (Block $b 'lint {"symbol":"NeverCalled","sure":true}') @('`sure` and `kinds` narrow the rows of units')
 Check 'lint program' (Block $b 'lint {"file":"AppB/AppB.dpr"}') @('AppB\AppB.dpr is not a unit any analysis holds - lint reads the `uses` of units')
 # metrics: AppB\uRc*.pas mirror what dcc's Make was seen to recompile (SPEC
 # 9.7): a unit binding a declaration of uRcA or one taking it in (uRcE through

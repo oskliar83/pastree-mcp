@@ -13199,6 +13199,9 @@ type
     Doubt: Boolean;
     Edges: TArray<TLintEdge>;
     Effects: TArray<string>;   // the units its "leaves ... out" names
+    // unused-symbol: what the declaration is, as `kinds` names it (type,
+    // routine, var, const, field, property); '' for the uses rules.
+    Kind: string;
   end;
 
   // What lint reads of one analysis more than once: the interface names of
@@ -14820,7 +14823,8 @@ const
     'members of an interface', 'methods an interface of their class names',
     'operators', 'class constructors and destructors',
     'attribute constructors', 'the for-in protocol (GetEnumerator, MoveNext, Current)',
-    'in generated units');
+    'in generated units',
+    'in units that replace a library unit of their name');
 
 { unused-symbol: PasTree's FindUnusedSymbols (PasTree.Sema.Lint) over every
   analysis holding the units asked about, through the workspace (light mode
@@ -14898,6 +14902,14 @@ begin
       if LS.Doubts <> nil then
         LRow.Text := LRow.Text + ', but ' + string.Join('; ', LS.Doubts);
       LRow.Doubt := LS.Doubts <> nil;
+      case LS.Kind of
+        skType: LRow.Kind := 'type';
+        skRoutine: LRow.Kind := 'routine';
+        skVar: LRow.Kind := 'var';
+        skConst: LRow.Kind := 'const';
+        skField: LRow.Kind := 'field';
+        skProperty: LRow.Kind := 'property';
+      end;
       ARows.Add(LRow);
     end;
     for var LW := Low(TPasUnusedSkip) to High(TPasUnusedSkip) do
@@ -14928,7 +14940,9 @@ const
     'a class constructor or destructor - its unit runs it',
     'an attribute''s constructor - the attribute naming its class runs it',
     'the for-in protocol - `for ... in` runs it',
-    'declared in a generated unit');
+    'declared in a generated unit',
+    'declared in a unit that replaces a library unit of its name - the '
+      + 'library .dcu files were compiled against the original');
 
   MAX_LINT_SYMBOLS = 50;
 
@@ -15179,12 +15193,71 @@ begin
   end;
 end;
 
+const
+  // The kinds of declaration unused-symbol rows are (TLintRow.Kind), in the
+  // order the header counts them.
+  LINT_KINDS: array[0..5] of string = ('type', 'routine', 'var', 'const',
+    'field', 'property');
+
+// `kinds` of `lint`: names joined by commas (or a list written as JSON in
+// the string), each one of LINT_KINDS or a word an agent writes for one -
+// procedure, function, method, constructor, destructor for routine; class,
+// record, interface for type; variable, constant.
+function LintKindsArg(const AText: string): TArray<string>;
+var
+  LK: string;
+begin
+  Result := nil;
+  for var LPart in AText.Split([',', ';', '|', ' ', '[', ']', '"'],
+    TStringSplitOptions.ExcludeEmpty) do
+  begin
+    LK := LowerCase(LPart.Trim);
+    if MatchText(LK, ['procedure', 'function', 'method', 'constructor',
+       'destructor', 'routines', 'methods']) then
+      LK := 'routine'
+    else if MatchText(LK, ['class', 'record', 'interface', 'types']) then
+      LK := 'type'
+    else if MatchText(LK, ['variable', 'vars', 'variables']) then
+      LK := 'var'
+    else if MatchText(LK, ['constant', 'consts', 'constants']) then
+      LK := 'const'
+    else if MatchText(LK, ['fields', 'properties']) then
+      LK := IfThen(LK = 'fields', 'field', 'property');
+    if not MatchText(LK, LINT_KINDS) then
+      raise EToolError.CreateFmt('unknown kind `%s` - the kinds: %s',
+        [LPart.Trim, string.Join(', ', LINT_KINDS)]);
+    if not MatchText(LK, Result) then
+      Result := Result + [LK];
+  end;
+end;
+
+// The rows `sure` and `kinds` leave: no `but` (any rule), and an
+// unused-symbol row only of the kinds asked for - the uses rules' rows have
+// no kind and stay.
+function LintListed(const ARows: TArray<TLintRow>; ASure: Boolean;
+  const AKinds: TArray<string>): TArray<TLintRow>;
+var
+  LN: Integer;
+begin
+  SetLength(Result, Length(ARows));
+  LN := 0;
+  for var LRow in ARows do
+    if not (ASure and LRow.Doubt) and ((AKinds = nil) or
+       (LRow.Rule <> LINT_UNUSED_SYMBOL) or MatchText(LRow.Kind, AKinds)) then
+    begin
+      Result[LN] := LRow;
+      Inc(LN);
+    end;
+  SetLength(Result, LN);
+end;
+
 function ToolLint(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
 var
   LRules, LAskedFiles: TArray<string>;
   LFile, LIn, LKey, LNotHeld: string;
   LLimit, LShown, LDoubts, LN, LAsked: Integer;
-  LUnused, LMove, LSymbols: Boolean;
+  LUnused, LMove, LSymbols, LSure: Boolean;
+  LKinds: TArray<string>;
   LSkipped: string;
   LFiles, LOthers: TList<string>;
   LSeen: TDictionary<string, Boolean>;
@@ -15207,9 +15280,14 @@ begin
         [LR.Trim, string.Join(', ', LINT_ALL_RULES)]);
     LRules := LRules + [LowerCase(LR.Trim)];
   end;
+  LSure := ArgBool(AArgs, 'sure', False);
+  LKinds := LintKindsArg(ArgStr(AArgs, 'kinds'));
   if (AArgs.GetValue('symbol') <> nil) and
      not (AArgs.GetValue('symbol') is TJSONNull) then
   begin
+    if LSure or (LKinds <> nil) then
+      raise EToolError.Create('`sure` and `kinds` narrow the rows of units - '
+        + 'with `symbol` each declaration named answers, its `but` with it');
     if (LRules <> nil) and ((Length(LRules) > 1) or
        not SameText(LRules[0], LINT_UNUSED_SYMBOL)) then
       raise EToolError.Create('`symbol` asks unused-symbol of the '
@@ -15217,11 +15295,17 @@ begin
         + '`file` without `symbol`');
     Exit(LintSymbols(AWs, AArgs));
   end;
+  // `kinds` alone asks unused-symbol: the uses rules have no kinds.
+  if (LRules = nil) and (LKinds <> nil) then
+    LRules := [LINT_UNUSED_SYMBOL];
   if LRules = nil then
     LRules := LINT_RULES;
   LUnused := MatchText(LINT_UNUSED_USES, LRules);
   LMove := MatchText(LINT_USES_TO_IMPL, LRules);
   LSymbols := MatchText(LINT_UNUSED_SYMBOL, LRules);
+  if (LKinds <> nil) and not LSymbols then
+    raise EToolError.Create('`kinds` narrows the rows of unused-symbol - '
+      + 'add it to `rules`');
   LAskedFiles := LintFilesArg(AWs, AArgs);
   // LFile: the one file asked about, for the answer's wording.
   LFile := '';
@@ -15324,6 +15408,32 @@ begin
         'finding'), Plural(LByFile.Count, 'file'), Plural(LFiles.Count,
         'own unit'), LKey, IfThen(LDoubts > 0, Format(' - %d with a "but" '
         + 'to check before acting on it', [LDoubts]), '')]));
+      // What `kinds` would narrow to: on the client group 2,995 of 8,598
+      // unused-symbol rows were record fields, read or written whole.
+      LKey := '';
+      if LByRule.ContainsKey(LINT_UNUSED_SYMBOL) then
+        for var LK in LINT_KINDS do
+        begin
+          LN := 0;
+          for var LRow in LArr do
+            if LRow.Kind = LK then
+              Inc(LN);
+          if LN > 0 then
+            LKey := LKey + IfThen(LKey <> '', ', ') + Format('%s %d', [LK, LN]);
+        end;
+      if LKey <> '' then
+        LSb.AppendLine('unused-symbol by kind: ' + LKey);
+    end;
+    // `sure` and `kinds` narrow the rows listed; the header counts all.
+    if LSure or (LKinds <> nil) then
+    begin
+      LN := Length(LArr);
+      LArr := LintListed(LArr, LSure, LKinds);
+      if LN > 0 then
+        LSb.AppendLine(Format('listed: %d of them%s%s', [Length(LArr),
+          IfThen(LSure, ' - without a "but"', ''), IfThen(LKinds <> nil,
+          IfThen(LSure, ',', ' -') + ' unused-symbol of kind ' +
+          string.Join(', ', LKinds), '')]));
     end;
     LShown := 0;
     for var LRow in LArr do
@@ -15336,7 +15446,8 @@ begin
     end;
     if (LShown < Length(LArr)) and (LLimit > 0) then
       LSb.AppendLine(Format('... %d more (raise `limit`, or narrow with '
-        + '`file`, `in` or `rules`)', [Length(LArr) - LShown]));
+        + '`file`, `in`, `rules`, `kinds` or `sure`)', [Length(LArr) -
+        LShown]));
     if LNotHeld <> '' then
       LSb.AppendLine('not a unit any analysis holds, not checked: ' + LNotHeld);
     if LSkipped <> '' then
@@ -21130,11 +21241,18 @@ const
     + 'not compiled or a string spelling it, another overload in use, a '
     + 'namesake in another unit). `symbol` asks it of the declarations named '
     + 'alone, each answered unused, used, or not weighed and why (a virtual '
-    + 'method: `callers`). Run `compile` after acting on it.",'
+    + 'method: `callers`). `sure` lists only the rows with no `but`, `kinds` '
+    + 'the unused-symbol rows of those kinds (routine, type, field...). Run '
+    + '`compile` after acting on it.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"rules":{"type":"string","description":"Comma-separated: '
     + 'unused-uses, uses-to-implementation (the default: both), '
     + 'unused-symbol"},'
+    + '"sure":{"type":"boolean","description":"List only the rows with no '
+    + '`but` - safe to act on (the header still counts all)"},'
+    + '"kinds":{"type":"string","description":"unused-symbol rows only of '
+    + 'these kinds, joined by commas: type, routine, var, const, field, '
+    + 'property (the header counts each); alone, asks unused-symbol"},'
     + '"symbol":{"description":"unused-symbol of these declarations alone: '
     + 'names (TFoo.Bar) joined by commas, or a list of names and '
     + '{\"file\",\"line\",\"name\"}; an overloaded name is each overload. '

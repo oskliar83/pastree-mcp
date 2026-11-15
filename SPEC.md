@@ -1145,6 +1145,16 @@ gap between the answers and the truth.
      (the doubt "another overload is used" needs the siblings weighed);
      the group-wide passes are a whole run's, so a verdict and the unit's
      run agree.
+
+     `sure` and `kinds` (0.55.0) narrow the rows listed, the header still
+     counting all and unused-symbol's rows by kind: on the client group
+     4,207 of 8,598 rows carry a `but` and 2,995 are record fields, so an
+     agent after the dead routines read thousands of rows it could not act
+     on. `sure` lists the rows with no `but`, of any rule; `kinds` (type,
+     routine, var, const, field, property - procedure, method, class and
+     the like taken for theirs) the unused-symbol rows of those kinds,
+     leaving the uses rules' rows, and alone asks unused-symbol. Neither
+     goes with `symbol`, whose every declaration answers with its `but`.
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.

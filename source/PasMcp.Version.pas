@@ -16,7 +16,7 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.54.0';
+  PasTreeMcpVersion = '0.55.0';
   // 0.194.0: TPasWorkspace.CheckUnusedSymbols, lint's `symbol` (a compile
   // error without it).
   // 0.182.0 before: PasTree.Sema.Lint.FindUnusedSymbols and

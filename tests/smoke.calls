@@ -354,6 +354,13 @@ lint {"symbol":"NeverCalled, TPlainBox.Reset, TShapeBox.Changed, TShapeBox.BoxCl
 lint {"symbol":"Reset","file":"AppB/uBoxes.pas"}
 lint {"symbol":["TCounter.Bump",{"file":"AppB/uBoxes.pas","line":186,"name":"Run"},{"file":"AppB/uBoxes.pas","line":189,"name":"AValue"}]}
 lint {"symbol":"NeverCalled","rules":"unused-uses"}
+lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas","kinds":"field, procedure","sure":true,"limit":3}
+lint {"file":"AppB/uBoxes.pas","kinds":"routine"}
+lint {"file":"AppB/uLint.pas","sure":true}
+lint {"rules":"unused-symbol","file":"Shared/uShapes.pas","sure":true}
+lint {"file":"AppB/uBoxes.pas","kinds":"nope"}
+lint {"rules":"unused-uses","kinds":"field"}
+lint {"symbol":"NeverCalled","sure":true}
 lint {"file":"AppB/AppB.dpr"}
 lint {"file":"AppB/uLintBase.pas"}
 lint {"file":"AppB/uLintLast.pas"}
