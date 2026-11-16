@@ -91,6 +91,7 @@ uses
   PasTree.Sema.Project,
   PasTree.Sema.Nav,
   PasTree.Sema.Lint,
+  PasTree.UsesEdit,
   PasTree.Sema.Workspace,
   PasTree.Dfm,
   PasTree.Sema.Dfm,
@@ -13153,11 +13154,13 @@ const
   LINT_UNUSED_USES = 'unused-uses';
   LINT_USES_TO_IMPL = 'uses-to-implementation';
   LINT_UNUSED_SYMBOL = 'unused-symbol';
-  // The rules run when `rules` names none: unused-symbol is asked by name
-  // (a pass over every own unit's bindings, and a different question).
+  LINT_UNREFERENCED = 'unreferenced-units';
+  // The rules run when `rules` names none: unused-symbol and
+  // unreferenced-units are asked by name (a pass over every own unit's
+  // bindings, the whole program's reach - and different questions).
   LINT_RULES: TArray<string> = [LINT_UNUSED_USES, LINT_USES_TO_IMPL];
   LINT_ALL_RULES: TArray<string> = [LINT_UNUSED_USES, LINT_USES_TO_IMPL,
-    LINT_UNUSED_SYMBOL];
+    LINT_UNUSED_SYMBOL, LINT_UNREFERENCED];
   // Doubts and bindings named on one row; past them, counted.
   MAX_LINT_NAMED = 3;
 
@@ -13203,12 +13206,15 @@ type
     // routine, var, const, field, property); '' for the uses rules.
     Kind: string;
     How: TPasUnusedHow;        // unused-symbol: why a row is one
+    Entry: string;             // unused-uses: the entry's name, as written
   end;
 
   // What lint reads of one analysis more than once: the interface names of
   // the units it checks against, the uses graph and what each program
-  // reaches, which units run code at start.
-  TLintAnalysis = class
+  // reaches, which units run code at start. The graph PasTree's
+  // WeighRemovedTogether walks (LintTogether): this lint's reading of the
+  // analysis - its program defines (Worlds), a light unit's effect unknown.
+  TLintAnalysis = class(TPasUsesGraph)
   private
     FWs: TMcpWorkspace;
     FA: TMcpAnalysis;
@@ -13248,16 +13254,16 @@ type
     function NamesOf(AMid: Integer): TDictionary<string, Integer>;
     // What linking AMid into a program does by itself, '' for nothing: it
     // has initialization or finalization code, or links a resource in.
-    function LinkEffect(AMid: Integer): string;
+    function LinkEffect(AMid: Integer): string; override;
     // The units with code at start that a program of the analysis no longer
     // reaches once AFrom stops using ATo, and the programs.
     procedure Drops(AFrom, ATo: Integer; var AUnits, APrograms: TArray<string>);
     // What ARoot reaches, every edge in ASkip (From shl 32 or Target) left
     // out, and those in AAlso (nil: none); and leaving out only AAlso.
     function ReachWithout(ARoot: Integer; ASkip: TDictionary<Int64, Integer>;
-      AAlso: TDictionary<Int64, Boolean>): TArray<Boolean>;
+      AAlso: TDictionary<Int64, Boolean>): TArray<Boolean>; override;
     function FullReach(ARoot: Integer;
-      AAlso: TDictionary<Int64, Boolean>): TArray<Boolean>;
+      AAlso: TDictionary<Int64, Boolean>): TArray<Boolean>; override;
     // The `uses` edges of own units ARoot's project may not have: inside a
     // conditional block naming a define its project and the analysis do not
     // agree on. nil for a program built as analyzed.
@@ -13269,6 +13275,7 @@ type
     // through an uncertain edge is not linked at all if the edge is not
     // there.
     function Worlds(ARoot: Integer): TArray<TDictionary<Int64, Boolean>>;
+      override;
     // Whether PasTree's own rule (PasTree.Sema.Lint.FindUnusedUses) finds
     // AFile's entry AName unused here - asked once per file.
     function TreeSaysUnused(const AFile, AName: string): Boolean;
@@ -13281,9 +13288,11 @@ type
     // The units with an effect AStart reaches through the units in ALost,
     // 'Name (initialization)'.
     function EffectsFrom(AStart: Integer;
-      const ALost: TArray<Boolean>): TArray<string>;
+      const ALost: TArray<Boolean>): TArray<string>; override;
+    // The programs, the name a row says one by.
+    function Roots: TArray<Integer>; override;
+    function ProgramName(ARoot: Integer): string; override;
     property A: TMcpAnalysis read FA;
-    property Roots: TArray<Integer> read FRoots;
     property LightAsked: TList<Integer> read FLightAsked;
     // Light mode: the units of ALost a full closure may still reach after
     // the removal - through units nobody loaded, past a light unit's
@@ -13294,7 +13303,7 @@ type
     // runs again and walks the loaded graph that far, until the answer is
     // the full analysis'. nil when nothing lost is reached that way.
     function KeptPastLoaded(const ALess,
-      ALost: TArray<Boolean>): TArray<Boolean>;
+      ALost: TArray<Boolean>): TArray<Boolean>; override;
     property LoadNeeded: TDictionary<string, Boolean> read FLoadNeeded;
   end;
 
@@ -13796,6 +13805,16 @@ function TLintAnalysis.TreeSaysUnused(const AFile, AName: string): Boolean;
 begin
   AskTree([AFile]);
   Result := FTreeUnused.ContainsKey(LowerCase(AFile + '|' + AName));
+end;
+
+function TLintAnalysis.Roots: TArray<Integer>;
+begin
+  Result := FRoots;
+end;
+
+function TLintAnalysis.ProgramName(ARoot: Integer): string;
+begin
+  Result := ChangeFileExt(ExtractFileName(FA.Proj.ModelFile(ARoot)), '');
 end;
 
 function TLintAnalysis.Worlds(
@@ -14597,6 +14616,7 @@ begin
       if not LX.Used then
       begin
         LRow.Rule := LINT_UNUSED_USES;
+        LRow.Entry := LX.Name;
         LRow.Text := LX.Name + ' - no name of it is used here';
         if Length(LX.Drops) > 0 then
           LRow.Text := LRow.Text + Format('; but removing it leaves %s out '
@@ -14651,99 +14671,41 @@ end;
 procedure LintTogether(ALints: TObjectList<TLintAnalysis>;
   ARows: TList<TLintRow>);
 var
-  LSkip: TDictionary<Int64, Integer>;
-  LFull, LLess, LLost, LKept: TArray<Boolean>;
-  LChanged, LAny: Boolean;
-  LFrom, LTarget: Integer;
-  LUnits, LPrograms: TArray<TArray<string>>;
+  LGraphs: TArray<TPasUsesGraph>;
+  LTogether: TArray<TPasTogetherRow>;
+  LEdge: TPasTogetherEdge;
   LRow: TLintRow;
-  LName: string;
 begin
-  SetLength(LUnits, ARows.Count);
-  SetLength(LPrograms, ARows.Count);
-  LSkip := TDictionary<Int64, Integer>.Create;
-  try
-    repeat
-      LChanged := False;
-      for var LAi := 0 to ALints.Count - 1 do
-      begin
-        LSkip.Clear;
-        for var LR := 0 to ARows.Count - 1 do
-          if (ARows[LR].Rule = LINT_UNUSED_USES) and not ARows[LR].Doubt then
-            for var LE in ARows[LR].Edges do
-              if LE.A = LAi then
-                LSkip.AddOrSetValue((Int64(LE.From) shl 32) or
-                  Cardinal(LE.Target), LR);
-        if LSkip.Count = 0 then
-          Continue;
-        for var LRoot in ALints[LAi].Roots do
-        for var LWorld in ALints[LAi].Worlds(LRoot) do
-        begin
-          LFull := ALints[LAi].FullReach(LRoot, LWorld);
-          LLess := ALints[LAi].ReachWithout(LRoot, LSkip, LWorld);
-          SetLength(LLost, Length(LFull));
-          LAny := False;
-          for var LMid := 0 to High(LFull) do
-          begin
-            LLost[LMid] := LFull[LMid] and not LLess[LMid];
-            if LLost[LMid] and (ALints[LAi].LinkEffect(LMid) <> '') then
-              LAny := True;
-          end;
-          if not LAny then
-            Continue;
-          // Light mode: what a library body may still reach is not lost.
-          LKept := ALints[LAi].KeptPastLoaded(LLess, LLost);
-          if LKept <> nil then
-          begin
-            LAny := False;
-            for var LMid := 0 to High(LKept) do
-            begin
-              if LKept[LMid] then
-                LLost[LMid] := False;
-              if LLost[LMid] and (ALints[LAi].LinkEffect(LMid) <> '') then
-                LAny := True;
-            end;
-            if not LAny then
-              Continue;
-          end;
-          LName := ChangeFileExt(ExtractFileName(
-            ALints[LAi].A.Proj.ModelFile(LRoot)), '');
-          for var LPair in LSkip do
-          begin
-            LFrom := Integer(LPair.Key shr 32);
-            LTarget := Integer(LPair.Key and $FFFFFFFF);
-            if not LLess[LFrom] or not LLost[LTarget] then
-              Continue;
-            for var LU in ALints[LAi].EffectsFrom(LTarget, LLost) do
-              if not MatchText(LU, LUnits[LPair.Value]) then
-                LUnits[LPair.Value] := LUnits[LPair.Value] + [LU];
-            if Length(LUnits[LPair.Value]) = 0 then
-              Continue;
-            if not MatchText(LName, LPrograms[LPair.Value]) then
-              LPrograms[LPair.Value] := LPrograms[LPair.Value] + [LName];
-            LRow := ARows[LPair.Value];
-            if not LRow.Doubt then
-            begin
-              LRow.Doubt := True;
-              ARows[LPair.Value] := LRow;
-              LChanged := True;
-            end;
-          end;
-        end;
-      end;
-    until not LChanged;
-  finally
-    LSkip.Free;
-  end;
+  // PasTree's WeighRemovedTogether (0.202.0) over every analysis: a row
+  // weighed as removed is an unused-uses row with no `but`, its edge in
+  // each analysis holding its unit.
+  SetLength(LGraphs, ALints.Count);
+  for var LAi := 0 to ALints.Count - 1 do
+    LGraphs[LAi] := ALints[LAi];
+  SetLength(LTogether, ARows.Count);
   for var LR := 0 to ARows.Count - 1 do
-    if Length(LUnits[LR]) > 0 then
+  begin
+    LTogether[LR].Held := (ARows[LR].Rule <> LINT_UNUSED_USES) or
+      ARows[LR].Doubt;
+    for var LE in ARows[LR].Edges do
+    begin
+      LEdge.Graph := LE.A;
+      LEdge.From := LE.From;
+      LEdge.Target := LE.Target;
+      LTogether[LR].Edges := LTogether[LR].Edges + [LEdge];
+    end;
+  end;
+  WeighRemovedTogether(LGraphs, LTogether);
+  for var LR := 0 to ARows.Count - 1 do
+    if Length(LTogether[LR].Units) > 0 then
     begin
       LRow := ARows[LR];
-      LRow.Effects := LRow.Effects + LUnits[LR];
+      LRow.Doubt := True;
+      LRow.Effects := LRow.Effects + LTogether[LR].Units;
       LRow.Text := LRow.Text + Format('; but removed with the other '
         + 'unused-uses rows that have no "but", it leaves %s out of %s - keep '
-        + 'it, or another row saying so', [NamedList(LUnits[LR],
-        MAX_LINT_NAMED), NamedList(LPrograms[LR], MAX_LINT_NAMED)]);
+        + 'it, or another row saying so', [NamedList(LTogether[LR].Units,
+        MAX_LINT_NAMED), NamedList(LTogether[LR].Programs, MAX_LINT_NAMED)]);
       ARows[LR] := LRow;
     end;
 end;
@@ -14872,9 +14834,11 @@ begin
 end;
 
 procedure LintUnusedSymbols(AWs: TMcpWorkspace; const AFiles: TArray<string>;
-  ARows: TList<TLintRow>; out ASkipped: string);
+  ARows: TList<TLintRow>; out ASkipped: string; out AInRow: Integer);
 var
   LHeld, LUnusedIn: TDictionary<string, Integer>;
+  LInRowKeys: TDictionary<string, Boolean>;
+  LInRow: TArray<TPasUnusedSymbol>;
   LFirst: TDictionary<string, TPasUnusedSymbol>;
   LFirstA: TDictionary<string, TMcpAnalysis>;
   LUnitOf: TDictionary<string, string>;
@@ -14887,7 +14851,9 @@ var
   LS: TPasUnusedSymbol;
 begin
   ASkipped := '';
+  AInRow := 0;
   FillChar(LMax, SizeOf(LMax), 0);
+  LInRowKeys := TDictionary<string, Boolean>.Create;
   LHeld := TDictionary<string, Integer>.Create;
   LUnusedIn := TDictionary<string, Integer>.Create;
   LFirst := TDictionary<string, TPasUnusedSymbol>.Create;
@@ -14909,10 +14875,22 @@ begin
         end;
       if LFiles = nil then
         Continue;
-      LRes := LA.WS.FindUnusedSymbols(LFiles, LSkips);
+      // A member of a type that is a row itself is no row (PasTree 0.201.0):
+      // in this analysis it is unused all the same, and counts so - a row of
+      // the group where another analysis uses its type and not it.
+      LRes := LA.WS.FindUnusedSymbols(LFiles, LSkips, LInRow);
       AWs.QueryDone(LA);
       for var LW := Low(TPasUnusedSkip) to High(TPasUnusedSkip) do
         LMax[LW] := Max(LMax[LW], LSkips[LW]);
+      for LS in LInRow do
+      begin
+        LKey := LowerCase(Format('%s:%d:%d', [LS.FileName, LS.Line, LS.Col]));
+        if not LUnusedIn.TryGetValue(LKey, LN) then
+          LN := 0;
+        LUnusedIn.AddOrSetValue(LKey, LN + 1);
+        LInRowKeys.AddOrSetValue(LKey, True);
+        LUnitOf.TryAdd(LKey, LowerCase(LA.Proj.ModelFile(LS.UnitId)));
+      end;
       for LS in LRes do
       begin
         LKey := LowerCase(Format('%s:%d:%d', [LS.FileName, LS.Line, LS.Col]));
@@ -14964,7 +14942,13 @@ begin
       if LMax[LW] > 0 then
         ASkipped := ASkipped + IfThen(ASkipped <> '', ', ') + Format('%d %s',
           [LMax[LW], cUnusedSkipText[LW]]);
+    // Left out in every analysis holding it: its type is a row of the group.
+    for var LK in LInRowKeys.Keys do
+      if not LFirst.ContainsKey(LK) and LHeld.TryGetValue(LUnitOf[LK], LN) and
+         (LUnusedIn[LK] >= LN) then
+        Inc(AInRow);
   finally
+    LInRowKeys.Free;
     LUnitOf.Free;
     LFirstA.Free;
     LFirst.Free;
@@ -15299,14 +15283,225 @@ begin
   SetLength(Result, LN);
 end;
 
+{ ---- lint unreferenced-units ---- }
+
+{ unreferenced-units: PasTree's FindUnreferencedUnits (PasTree.Sema.Lint) -
+  the own units a program reaches only through unused `uses` entries, which
+  it would no longer reach once they are gone - with loHideGlobalInit, as
+  pastree-lsp's Units Nobody Uses: a unit whose initialization reaches
+  outside itself (a registration) is never offered. Over every analysis
+  holding the units asked about: a unit is a row only when each of them
+  finds it so - no program of the group reaches it. Its doubts (an
+  initialization of its own, a unit read interface-only) are the `but`. }
+procedure LintUnreferenced(AWs: TMcpWorkspace; const AFiles: TArray<string>;
+  ARows: TList<TLintRow>);
+var
+  LHeld, LUnrefIn: TDictionary<string, Integer>;
+  LFirst: TDictionary<string, TPasUnreferencedUnit>;
+  LListed, LDoubts: TDictionary<string, TArray<string>>;
+  LFiles, LList: TArray<string>;
+  LKey: string;
+  LN: Integer;
+  LRow: TLintRow;
+  LU: TPasUnreferencedUnit;
+begin
+  LHeld := TDictionary<string, Integer>.Create;
+  LUnrefIn := TDictionary<string, Integer>.Create;
+  LFirst := TDictionary<string, TPasUnreferencedUnit>.Create;
+  LListed := TDictionary<string, TArray<string>>.Create;
+  LDoubts := TDictionary<string, TArray<string>>.Create;
+  try
+    for var LA in AWs.Analyses do
+    begin
+      if LA.Proj = nil then
+        Continue;
+      LFiles := nil;
+      for var LF in AFiles do
+        if LA.Nav.ModelIdOf(LF) >= 0 then
+        begin
+          LFiles := LFiles + [LF];
+          if not LHeld.TryGetValue(LowerCase(LF), LN) then
+            LN := 0;
+          LHeld.AddOrSetValue(LowerCase(LF), LN + 1);
+        end;
+      if LFiles = nil then
+        Continue;
+      for LU in LA.WS.FindUnreferencedUnits(LFiles, [loHideGlobalInit]) do
+      begin
+        LKey := LowerCase(LU.Hit.FilePath);
+        if not LUnrefIn.TryGetValue(LKey, LN) then
+          LN := 0;
+        LUnrefIn.AddOrSetValue(LKey, LN + 1);
+        LFirst.TryAdd(LKey, LU);
+        // The listers and the doubts of every analysis, each once.
+        if not LListed.TryGetValue(LKey, LList) then
+          LList := nil;
+        for var LS in LU.ListedBy do
+          if not MatchText(LS, LList) then
+            LList := LList + [LS];
+        LListed.AddOrSetValue(LKey, LList);
+        if not LDoubts.TryGetValue(LKey, LList) then
+          LList := nil;
+        for var LS in LU.Doubts do
+          if not MatchText(LS, LList) then
+            LList := LList + [LS];
+        LDoubts.AddOrSetValue(LKey, LList);
+      end;
+      AWs.QueryDone(LA);
+    end;
+    for var LP in LFirst do
+    begin
+      if not LHeld.TryGetValue(LP.Key, LN) or (LUnrefIn[LP.Key] < LN) then
+        Continue;
+      LU := LP.Value;
+      LRow := Default(TLintRow);
+      LRow.FilePath := LU.Hit.FilePath;
+      LRow.Line := LU.Hit.Line;
+      LRow.Col := LU.Hit.Col;
+      LRow.Rule := LINT_UNREFERENCED;
+      LList := LListed[LP.Key];
+      TArray.Sort<string>(LList, TIStringComparer.Ordinal);
+      LRow.Text := LU.UnitName + ' - no program of the group uses it';
+      if LList <> nil then
+        LRow.Text := LRow.Text + '; listed by ' + NamedList(LList,
+          MAX_LINT_NAMED);
+      LList := LDoubts[LP.Key];
+      LRow.Doubt := LList <> nil;
+      if LList <> nil then
+        LRow.Text := LRow.Text + '; but ' + NamedList(LList, MAX_LINT_NAMED);
+      ARows.Add(LRow);
+    end;
+  finally
+    LDoubts.Free;
+    LListed.Free;
+    LFirst.Free;
+    LUnrefIn.Free;
+    LHeld.Free;
+  end;
+end;
+
+{ `apply` of `lint`: the unused-uses rows with no `but` taken out of their
+  files - PasTree.UsesEdit, the rewrite pastree-lsp's Remove makes: one per
+  clause, the layout kept, a directive never dropped (an entry no comma can
+  go with without one is refused, and said so). Rows are weighed together
+  (LintTogether), so what is written is safe to remove at once. Each file
+  is rewritten from the tree of an analysis whose text is the file's on
+  disk, in its encoding and line breaks (`format`'s WriteLikeFile). }
+procedure WriteLikeFile(const APath: string; const AOld: TBytes;
+  const AText: string; out AHow: string); forward;
+
+function LintApply(AWs: TMcpWorkspace; const ARows: TArray<TLintRow>): string;
+var
+  LByFile: TDictionary<string, TArray<string>>;
+  LPathOf: TDictionary<string, string>;
+  LKeys, LNames, LRefused, LMissing, LNotes: TArray<string>;
+  LFile, LHow, LText, LNew: string;
+  LBytes: TBytes;
+  LTree: TPasTree;
+  LFound: Boolean;
+  LRemovals: TArray<TPasUsesRemoval>;
+  LEdits: TPasTextEdits;
+  LEdit: TPasTextEdit;
+  LRemoved, LFiles, LMid: Integer;
+begin
+  LByFile := TDictionary<string, TArray<string>>.Create;
+  LPathOf := TDictionary<string, string>.Create;
+  try
+    for var LRow in ARows do
+      if (LRow.Rule = LINT_UNUSED_USES) and not LRow.Doubt and
+         (LRow.Entry <> '') then
+      begin
+        if not LByFile.TryGetValue(LowerCase(LRow.FilePath), LNames) then
+          LNames := nil;
+        LByFile.AddOrSetValue(LowerCase(LRow.FilePath), LNames + [LRow.Entry]);
+        LPathOf.AddOrSetValue(LowerCase(LRow.FilePath), LRow.FilePath);
+      end;
+    if LByFile.Count = 0 then
+      Exit('apply: no unused-uses row without a "but" - nothing written');
+    LKeys := LByFile.Keys.ToArray;
+    TArray.Sort<string>(LKeys, TStringComparer.Ordinal);
+    LRemoved := 0;
+    LFiles := 0;
+    LNotes := nil;
+    for var LKey in LKeys do
+    begin
+      LFile := LPathOf[LKey];
+      LNames := LByFile[LKey];
+      LBytes := TFile.ReadAllBytes(LFile);
+      LText := TPasSourceManager.DecodeBytes(LBytes, LHow);
+      if LHow <> '' then
+      begin
+        LNotes := LNotes + [Format('%s: read %s - writing it back would change '
+          + 'more than its uses; not written', [AWs.RelPath(LFile),
+          LHow.Replace('|', ' ')])];
+        Continue;
+      end;
+      // The tree of an analysis that read the file as it is now.
+      LFound := False;
+      LTree := Default(TPasTree);
+      for var LA in AWs.Analyses do
+      begin
+        if LA.Proj = nil then
+          Continue;
+        LMid := LA.Proj.ModelIdOf(LFile);
+        if LMid < 0 then
+          Continue;
+        RequireText(AWs, LA, LMid);
+        LTree := LA.Proj.Model(LMid).Tree;
+        if (Length(LTree.Source.Files) > 0) and
+           (LTree.Source.Files[0].Source = LText) then
+        begin
+          LFound := True;
+          Break;
+        end;
+      end;
+      if not LFound then
+      begin
+        LNotes := LNotes + [Format('%s: changed on disk since it was analyzed '
+          + '- not written; call again', [AWs.RelPath(LFile)])];
+        Continue;
+      end;
+      LRemovals := UsesRemovalByName(LTree, LNames, LRefused, LMissing);
+      for var LR in LRefused do
+        LNotes := LNotes + [Format('%s: %s - kept', [AWs.RelPath(LFile), LR])];
+      for var LM in LMissing do
+        LNotes := LNotes + [Format('%s: %s - no clause of the file as read '
+          + 'holds it; kept', [AWs.RelPath(LFile), LM])];
+      if LRemovals = nil then
+        Continue;
+      LEdits := nil;
+      for var LR in LRemovals do
+      begin
+        LEdit.Start := LR.Start;
+        LEdit.Len := LR.Len;
+        LEdit.Text := LR.NewText;
+        LEdits := LEdits + [LEdit];
+      end;
+      LNew := PasApplyEdits(LText, LEdits);
+      WriteLikeFile(LFile, LBytes, LNew, LHow);
+      Inc(LFiles);
+      Inc(LRemoved, Length(LNames) - Length(LRefused) - Length(LMissing));
+    end;
+    Result := Format('apply: %d `uses` %s removed from %s - the next call '
+      + 'reads them again; run `compile`', [LRemoved, IfThen(LRemoved = 1,
+      'entry', 'entries'), Plural(LFiles, 'file')]);
+    for var LNote in LNotes do
+      Result := Result + sLineBreak + '  ' + LNote;
+  finally
+    LPathOf.Free;
+    LByFile.Free;
+  end;
+end;
+
 function ToolLint(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
 var
   LRules, LAskedFiles: TArray<string>;
   LFile, LIn, LKey, LNotHeld: string;
   LLimit, LShown, LDoubts, LN, LAsked: Integer;
-  LUnused, LMove, LSymbols, LSure: Boolean;
+  LUnused, LMove, LSymbols, LSure, LUnref, LApply: Boolean;
   LKinds: TArray<string>;
-  LSkipped: string;
+  LSkipped, LApplied: string;
+  LInRow: Integer;
   LFiles, LOthers: TList<string>;
   LSeen: TDictionary<string, Boolean>;
   LRows: TList<TLintRow>;
@@ -15351,6 +15546,11 @@ begin
   LUnused := MatchText(LINT_UNUSED_USES, LRules);
   LMove := MatchText(LINT_USES_TO_IMPL, LRules);
   LSymbols := MatchText(LINT_UNUSED_SYMBOL, LRules);
+  LUnref := MatchText(LINT_UNREFERENCED, LRules);
+  LApply := ArgBool(AArgs, 'apply', False);
+  if LApply and not LUnused then
+    raise EToolError.Create('`apply` removes the unused-uses rows with no '
+      + '"but" - add unused-uses to `rules`');
   if (LKinds <> nil) and not LSymbols then
     raise EToolError.Create('`kinds` narrows the rows of unused-symbol - '
       + 'add it to `rules`');
@@ -15418,9 +15618,16 @@ begin
     // Light mode: the initializations the rows met unread, read.
     EnsureLintEffects(AWs, LLints);
     LSkipped := '';
+    LInRow := 0;
     if LSymbols then
-      LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped);
+      LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped, LInRow);
+    if LUnref then
+      LintUnreferenced(AWs, LFiles.ToArray, LRows);
     LArr := LRows.ToArray;
+    // Written before the rows are listed: they say what was there.
+    LApplied := '';
+    if LApply then
+      LApplied := LintApply(AWs, LArr);
     TArray.Sort<TLintRow>(LArr, TComparer<TLintRow>.Construct(
       function(const L, R: TLintRow): Integer
       begin
@@ -15513,6 +15720,12 @@ begin
     if LSkipped <> '' then
       LSb.AppendLine('(unused-symbol does not weigh what is reached other than '
         + 'by name: ' + LSkipped + ')');
+    if LInRow > 0 then
+      LSb.AppendLine(Format('(unused-symbol does not list %s of a type that '
+        + 'is a row itself - each goes with its type)', [Plural(LInRow,
+        'member')]));
+    if LApplied <> '' then
+      LSb.AppendLine(LApplied);
     Result := LSb.ToString.TrimRight;
   finally
     LByFile.Free;
@@ -21305,12 +21518,20 @@ const
     + 'asks it of the declarations named '
     + 'alone, each answered unused, used, or not weighed and why (a virtual '
     + 'method: `callers`). `sure` lists only the rows with no `but`, `kinds` '
-    + 'the unused-symbol rows of those kinds (routine, type, field...). Run '
-    + '`compile` after acting on it.",'
+    + 'the unused-symbol rows of those kinds (routine, type, field...). '
+    + 'unreferenced-units (asked by name): an own unit no program of the '
+    + 'group reaches but through unused `uses` entries - it goes once they '
+    + 'do (a unit whose initialization registers something is never '
+    + 'offered). `apply: true` removes every unused-uses row without a '
+    + '`but` from its file - the rows are weighed as removed together, one '
+    + 'rewrite per clause, the layout kept. Run `compile` after acting on '
+    + 'it.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"rules":{"type":"string","description":"Comma-separated: '
     + 'unused-uses, uses-to-implementation (the default: both), '
-    + 'unused-symbol"},'
+    + 'unused-symbol, unreferenced-units"},'
+    + '"apply":{"type":"boolean","description":"Write: take the '
+    + 'unused-uses rows with no `but` out of their files (default false)"},'
     + '"sure":{"type":"boolean","description":"List only the rows with no '
     + '`but` - safe to act on (the header still counts all)"},'
     + '"kinds":{"type":"string","description":"unused-symbol rows only of '

@@ -754,12 +754,17 @@ Check 'lint files none held' (Block $b 'lint {"file":"AppB/uNope.pas,AppB/uNope2
 Check 'lint conditional move' (Block $b 'lint {"file":"AppB/uLintDef.pas"}') @('AppB\uLintDef.pas:13:3: uses-to-implementation System.Classes - used only in the implementation (first at line 28, in LintDef); it is inside {$IFDEF FIXTURE_A} at line 11 - move it with its condition')
 Check 'lint other defines' (Block $b 'lint {"file":"AppB/uLintLast.pas"}') @('AppB\uLintLast.pas:11:3: unused-uses uLintOnce - no name of it is used here; but removing it leaves uLintOnce (initialization) out of AppB', 'AppB\uLintLast.pas:12:3: unused-uses uLintTwinA - no name of it is used here; but it declares an overload of `LintTwin`, called at AppB\uLintLast.pas:19 - removed, the call may take another overload')
 Check 'lint nothing' (Block $b 'lint {"file":"Shared/uShapes.pas"}') @('no findings (unused-uses, uses-to-implementation) in Shared\uShapes.pas')
-Check 'lint bad rule' (Block $b 'lint {"rules":"nope"}') @('unknown rule `nope` - the rules: unused-uses, uses-to-implementation, unused-symbol')
+Check 'lint bad rule' (Block $b 'lint {"rules":"nope"}') @('unknown rule `nope` - the rules: unused-uses, uses-to-implementation, unused-symbol, unreferenced-units')
+# unreferenced-units: PasTree's FindUnreferencedUnits over every analysis -
+# the lint fixture's units, listed by programs that call nothing of them.
+Check 'lint unreferenced-units' (Block $b 'lint {"rules":"unreferenced-units"}') @('33 findings in 33 files of 44 own units: unreferenced-units 33 - 4 with a "but"', 'AppB\uColors.pas:1:6: unreferenced-units uColors - no program of the group uses it; listed by uBoxes.pas (no name of it used) and uLint.pas (no name of it used)', 'AppB\uLintReg.pas:1:6: unreferenced-units uLintReg - no program of the group uses it; listed by uLintAlias.pas (no name of it used) and uLintBase.pas (no name of it used); but it has initialization') @('uShapes -', 'uAppA -')
+Check 'lint unreferenced-units none' (Block $b 'lint {"rules":"unreferenced-units","file":"Shared/uShapes.pas"}') @('no findings (unreferenced-units) in Shared\uShapes.pas')
+Check 'lint apply needs the rule' (Block $b 'lint {"rules":"uses-to-implementation","apply":true}') @('`apply` removes the unused-uses rows with no "but" - add unused-uses to `rules`')
 # unused-symbol (PasTree's FindUnusedSymbols): declarations nothing uses, a
 # record's field and a name in a branch not compiled with a "but"; an
 # override, the static method a descendant runs by inherited, the hiding one
 # a published member not rows; a unit with none says so.
-Check 'lint unused-symbol' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas"}') @('38 findings in 1 file of 1 own unit: unused-symbol 38 - 8 with a "but"', 'of them 15 used only by unused ones, 3 only assigned - removed together with the rows they name', 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but the name is written in a branch this configuration does not compile', 'AppB\uBoxes.pas:94:5: unused-symbol TBufRec.Buf (field) - nothing in the group uses it, but a record''s field', 'AppB\uBoxes.pas:154:15: unused-symbol TPlainOther.Reset (procedure)', 'AppB\uBoxes.pas:146:15: unused-symbol TPlainBox.Reset (procedure) - used only by unused TPlainChild.Reset - it goes with them', 'AppB\uBoxes.pas:186:15: unused-symbol TCounter.Run (procedure)', '(unused-symbol does not weigh what is reached other than by name: 2 published (forms, RTTI), 4 virtual') @('TShapeBox.Changed', 'TBigBox.Changed', 'TShapeBox.BoxClick', 'TStampHelp')
+Check 'lint unused-symbol' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas"}') @('21 findings in 1 file of 1 own unit: unused-symbol 21 - 3 with a "but"', 'of them 7 used only by unused ones, 2 only assigned - removed together with the rows they name', 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but the name is written in a branch this configuration does not compile', 'AppB\uBoxes.pas:144:3: unused-symbol TPlainBox (class) - used only by unused TPlainChild, TPlainOther - it goes with them', 'AppB\uBoxes.pas:178:3: unused-symbol TCounter (class) - nothing in the group uses it', '(unused-symbol does not weigh what is reached other than by name: 2 published (forms, RTTI), 4 virtual', '(unused-symbol does not list 17 members of a type that is a row itself - each goes with its type)') @('TShapeBox.Changed', 'TBigBox.Changed', 'TShapeBox.BoxClick', 'TStampHelp', 'TPlainBox.Reset', 'TBufRec.Buf', 'unused-symbol TCounter.Run')
 Check 'lint unused-symbol none' (Block $b 'lint {"rules":"unused-symbol","file":"Shared/uShapes.pas"}') @('no findings (unused-symbol) in Shared\uShapes.pas')
 # `symbol`: a verdict per declaration named - unused (its "but" kept; and
 # TPlainBox.Reset, run only by the bare inherited of an unused descendant's
@@ -779,8 +784,8 @@ Check 'lint symbol derived' (Block $b 'lint {"symbol":"TDeadHost.GetSize') @('un
 # unused-symbol's rows by kind; `kinds` alone asks unused-symbol (`procedure`
 # read as routine), `sure` of the uses rules too; a unit with none, an
 # unknown kind, `kinds` beside a uses rule alone and beside `symbol` refused.
-Check 'lint sure kinds' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas","kinds":"field, procedure","sure":true') @('38 findings in 1 file of 1 own unit: unused-symbol 38 - 8 with a "but"', 'unused-symbol by kind: type 15, routine 12, field 10, property 1', 'listed: 14 of them - without a "but", unused-symbol of kind field, routine', 'AppB\uBoxes.pas:71:14: unused-symbol TWideBox.Configure (function)', 'AppB\uBoxes.pas:103:7: unused-symbol TOuterBox.TInnerBox.Depth (field)', '... 11 more (raise `limit`') @('TBufRec.Buf', 'NeverCalled', 'TBigBox (class)')
-Check 'lint kinds alone' (Block $b 'lint {"file":"AppB/uBoxes.pas","kinds":"routine"}') @('38 findings in 1 file of 1 own unit: unused-symbol 38', 'listed: 12 of them - unused-symbol of kind routine', 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but', 'AppB\uBoxes.pas:186:15: unused-symbol TCounter.Run (procedure)') @('(class) -', '(field) -', 'unused-uses')
+Check 'lint sure kinds' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas","kinds":"field, procedure","sure":true') @('21 findings in 1 file of 1 own unit: unused-symbol 21 - 3 with a "but"', 'unused-symbol by kind: type 14, routine 4, field 2, property 1', 'listed: 3 of them - without a "but", unused-symbol of kind field, routine', 'AppB\uBoxes.pas:230:5: unused-symbol TDeadHost.FStamp (field) - only assigned (uBoxes.pas:251), never read', 'AppB\uBoxes.pas:232:15: unused-symbol TDeadHost.Spin (procedure)') @('TBufRec.Buf', 'NeverCalled', 'TBigBox (class)', 'more (raise')
+Check 'lint kinds alone' (Block $b 'lint {"file":"AppB/uBoxes.pas","kinds":"routine"}') @('21 findings in 1 file of 1 own unit: unused-symbol 21', 'listed: 4 of them - unused-symbol of kind routine', 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but', 'AppB\uBoxes.pas:232:15: unused-symbol TDeadHost.Spin (procedure) - only its own body uses it') @('(class) -', '(field) -', 'unused-uses')
 Check 'lint sure uses' (Block $b 'lint {"file":"AppB/uLint.pas","sure":true}') @('6 findings in 1 file of 1 own unit: unused-uses 4, uses-to-implementation 2 - 3 with a "but"', 'listed: 3 of them - without a "but"', 'AppB\uLint.pas:11:3: unused-uses uColors - no name of it is used here') @('uLintInit', 'uBoxes', 'by kind')
 Check 'lint sure none' (Block $b 'lint {"rules":"unused-symbol","file":"Shared/uShapes.pas","sure":true}') @('no findings (unused-symbol) in Shared\uShapes.pas') @('listed:')
 Check 'lint kinds unknown' (Block $b 'lint {"file":"AppB/uBoxes.pas","kinds":"nope"}') @('unknown kind `nope` - the kinds: type, routine, var, const, field, property')
@@ -1294,6 +1299,31 @@ Check 'format applied' $fmtParts[3] @('AppA\uAppA.pas: already formatted - no ed
 Check 'format applied text' $fmtAfter @("begin`r`n  LShape := TCircle.Create(2);`r`n", "    if LShape.Area > 1 then`r`n      Writeln(LShape.Describe);`r`n", "begin`r`n      X := (1 + ;`r`nend;")
 if (($fmtBytes[0] -ne 0xEF) -or ($fmtBytes[1] -ne 0xBB) -or ($fmtBytes[2] -ne 0xBF)) { Write-Host 'FAIL [format applied] the BOM is gone'; $script:failures++ }
 if ($fmtAfter -match "[^`r]`n") { Write-Host 'FAIL [format applied] a line break without its CR'; $script:failures++ }
+
+# ---- lint with apply: a copy, written back -----------------------------------------
+# uLint's unused-uses rows with no `but` - uColors in the interface `uses`,
+# uCells in the implementation's - taken out by PasTree's UsesEdit: each
+# entry with its own line, the clauses otherwise as written; the two rows
+# with a `but` stay, and a lint of the result finds only them.
+Write-Host '--- CLI, lint with apply'
+$lintCopy = Join-Path ([IO.Path]::GetTempPath()) ('pastree-mcp-smoke-lint-' + [Guid]::NewGuid().ToString('N'))
+$lintCalls = $lintCopy + '.calls'
+Copy-Item -Recurse $fixture $lintCopy
+try {
+    [IO.File]::WriteAllText($lintCalls, "lint {`"file`":`"AppB/uLint.pas`",`"rules`":`"unused-uses`",`"apply`":true}`nlint {`"file`":`"AppB/uLint.pas`",`"rules`":`"unused-uses`"}`n")
+    $ErrorActionPreference = 'Continue'
+    try { $lintOut = (& $Exe --project (Join-Path $lintCopy 'Fixture.groupproj') --log none --script $lintCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
+    finally { $ErrorActionPreference = 'Stop' }
+    $lintAfter = [IO.File]::ReadAllText((Join-Path $lintCopy 'AppB\uLint.pas'))
+}
+finally {
+    Remove-Item -Recurse -Force $lintCopy -ErrorAction SilentlyContinue
+    Remove-Item -Force $lintCalls -ErrorAction SilentlyContinue
+}
+$lintParts = $lintOut -split '(?m)^=== '
+Check 'lint apply' $lintParts[1] @('4 findings in 1 file of 1 own unit: unused-uses 4 - 2 with a "but"', 'apply: 2 `uses` entries removed from 1 file - the next call reads them again')
+Check 'lint applied' $lintParts[2] @('2 findings in 1 file of 1 own unit: unused-uses 2 - 2 with a "but"', 'unused-uses uLintInit', 'unused-uses uBoxes') @('uColors', 'uCells')
+Check 'lint applied text' $lintAfter @("uses`r`n  System.SysUtils,`r`n  System.Classes,`r`n  uLintInit,`r`n  uLintHelp,`r`n  uLintBase;`r`n", "uses`r`n  uLintMore,`r`n  uFlags,`r`n  uBoxes,`r`n  uLintAlias;`r`n")
 
 # ---- format: every style field taken -----------------------------------------------
 # The fields come from TPasFormatOptions through RTTI; the refusal of an

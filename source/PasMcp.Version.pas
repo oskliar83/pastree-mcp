@@ -16,8 +16,12 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.56.2';
-  // 0.199.1: a declaration bound more often than the reference search
+  PasTreeMcpVersion = '0.57.0';
+  // 0.202.0: WeighRemovedTogether and TPasUsesGraph (lint's check of the
+  // rows removed together, moved there), PasTree.UsesEdit (`apply`), and
+  // FindUnusedSymbols' AInRowTypes overload (0.201.0) - a compile error
+  // without them.
+  // 0.199.1 before: a declaration bound more often than the reference search
   // places is used, and no nameless anonymous-method type is a row (without
   // it, false unused-symbol rows - a record helper's methods on the client
   // group).
@@ -60,7 +64,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.199.1';
+  cMinPasTreeVersion = '0.202.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.

@@ -369,6 +369,9 @@ lint {"file":"AppB/uLintDef.pas"}
 lint {"file":"AppB/uLint.pas, AppF/uMainForm.pas; AppB/uNope.pas","rules":"unused-uses"}
 lint {"file":["AppB/uLint.pas","Shared/uShapes.pas"],"rules":"unused-uses"}
 lint {"file":"AppB/uNope.pas,AppB/uNope2.pas"}
+lint {"rules":"unreferenced-units"}
+lint {"rules":"unreferenced-units","file":"Shared/uShapes.pas"}
+lint {"rules":"uses-to-implementation","apply":true}
 metrics {"metric":"recompile","file":"AppB/uRcA.pas"}
 metrics {"metric":"recompile","symbol":"TRcRec"}
 metrics {"metric":"recompile","symbol":"TRcObj.Touch"}
