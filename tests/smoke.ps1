@@ -768,7 +768,7 @@ Check 'lint apply needs the rule' (Block $b 'lint {"rules":"uses-to-implementati
 # AppB\uOrphan.pas (outside the index, past a comment naming it), has a
 # `but` saying so; Recur, recursive and called by an unused routine, says
 # both; one user: "it goes with it".
-Check 'lint unused-symbol' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas"}') @('25 findings in 1 file of 1 own unit: unused-symbol 25 - 5 with a "but"', 'of them 8 used only by unused ones, 2 only assigned - removed together with the rows they name', "a `"but`" several rows share is said once - `"but [N]`" on a row is:`n  [1] the name is written in a branch this configuration does not compile (uBoxes.pas:280) (2 rows)`n", 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but the name is written in a branch this configuration does not compile (uLint.pas:44); 1 file outside the index - not compiled by the group - uses its unit and writes the name: AppB\uOrphan.pas:19', 'AppB\uBoxes.pas:144:3: unused-symbol TPlainBox (class) - used only by unused TPlainChild, TPlainOther - it goes with them', 'AppB\uBoxes.pas:175:3: unused-symbol TCounterRec (record) - used only by unused TCounter.FRec - it goes with it', 'AppB\uBoxes.pas:178:3: unused-symbol TCounter (class) - nothing in the group uses it', 'AppB\uBoxes.pas:258:11: unused-symbol Recur (procedure) - used only by itself and by unused RecurCaller - it goes with it', 'AppB\uBoxes.pas:269:11: unused-symbol Ghost (procedure) - nothing in the group uses it, but [1]', 'AppB\uBoxes.pas:273:11: unused-symbol Ghost (procedure) - nothing in the group uses it, but [1]', '(unused-symbol does not weigh what is reached other than by name: 2 published (forms, RTTI), 4 virtual', '(unused-symbol does not list 18 members of a type that is a row itself - each goes with its type)', '(the files outside the index a `but` names are word matches, not resolved - to index them with the group: the project that compiles them, in "also" of pastree-mcp.json beside Fixture.groupproj)') @('TShapeBox.Changed', 'TBigBox.Changed', 'TShapeBox.BoxClick', 'TStampHelp', 'TPlainBox.Reset', 'TBufRec.Buf', 'unused-symbol TCounter.Run', 'uOrphan.pas:12', 'GhostUser')
+Check 'lint unused-symbol' (Block $b 'lint {"rules":"unused-symbol","file":"AppB/uBoxes.pas"}') @('25 findings in 1 file of 1 own unit: unused-symbol 25 - 5 with a "but"', 'of them 8 used only by unused ones, 2 only assigned - removed together with the rows they name', "a `"but`" several rows share is said once - `"but [N]`" on a row is:`n  [1] the name is written in a branch this configuration does not compile (uBoxes.pas:280) (2 rows)`n", 'AppB\uBoxes.pas:31:11: unused-symbol NeverCalled (procedure) - nothing in the group uses it, but the name is written in a branch this configuration does not compile (uLint.pas:44); 1 file outside the index - not compiled by the group - uses its unit and writes the name: AppB\uOrphan.pas:19', 'AppB\uBoxes.pas:144:3: unused-symbol TPlainBox (class) - used only by unused TPlainChild, TPlainOther - it goes with them', 'AppB\uBoxes.pas:175:3: unused-symbol TCounterRec (record) - used only by unused TCounter.FRec - it goes with it', 'AppB\uBoxes.pas:178:3: unused-symbol TCounter (class) - nothing in the group uses it', 'AppB\uBoxes.pas:258:11: unused-symbol Recur (procedure) - used only by itself and by unused RecurCaller - it goes with it', 'AppB\uBoxes.pas:269:11: unused-symbol Ghost (procedure) - nothing in the group uses it, but [1]', 'AppB\uBoxes.pas:273:11: unused-symbol Ghost (procedure) - nothing in the group uses it, but [1]', '(unused-symbol does not weigh what is reached other than by name: 2 published (forms, RTTI), 4 virtual', '(unused-symbol does not list 18 members of a type that is a row itself - each goes with its type)', '(the files outside the index a `but` names are word matches, not resolved - to index them with the group: the project that compiles them, in "also" of pastree-mcp.json beside Fixture.groupproj)') @('unused-symbol by reach', 'exported - in the interface', 'TShapeBox.Changed', 'TBigBox.Changed', 'TShapeBox.BoxClick', 'TStampHelp', 'TPlainBox.Reset', 'TBufRec.Buf', 'unused-symbol TCounter.Run', 'uOrphan.pas:12', 'GhostUser')
 Check 'lint unused-symbol none' (Block $b 'lint {"rules":"unused-symbol","file":"Shared/uShapes.pas"}') @('no findings (unused-symbol) in Shared\uShapes.pas')
 # `symbol`: a verdict per declaration named - unused (its "but" kept; and
 # TPlainBox.Reset, run only by the bare inherited of an unused descendant's
@@ -1555,6 +1555,31 @@ try {
     [IO.File]::WriteAllText($unit, $appText, $utf8)
     $null = Rpc 52 'tools/call' '{"name":"find","arguments":{"query":"TCircle"}}'
 
+    # A library (SPEC 9.7): "exported" makes AppB\uBoxes.pas a library unit -
+    # its interface rows keep a `but` "exported", the header splits the rows
+    # by reach; "hosts" names a program outside the group, and what it writes
+    # is used - left out of the rows, said under them.
+    $libJson = Join-Path $copy 'pastree-mcp.json'
+    [IO.File]::WriteAllText($libJson, '{"exported": ["AppB/uBoxes.pas"]}', $utf8)
+    $r = Rpc 70 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":0}}'
+    Check 'lint exported limit 0' (ToolText $r) @('25 findings in 1 file of 1 own unit', 'unused-symbol by reach: 3 exported (a library unit''s interface), 0 used only by exported ones, 20 private, 2 only assigned')
+    $r = Rpc 71 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":3}}'
+    Check 'lint exported but' (ToolText $r) @('AppB\uBoxes.pas:26:3: unused-symbol TBigBox (class) - nothing in the group uses it, but exported - in the interface of a library unit, a program outside the analysis may use it') @('TWideBox')
+    $hostDir = $copy + '-host'
+    New-Item -ItemType Directory -Force $hostDir | Out-Null
+    [IO.File]::WriteAllText((Join-Path $hostDir 'Host.dpr'), "program Host;`r`n`r`nuses`r`n  uBoxes;`r`n`r`nbegin`r`n  NeverCalled;`r`nend.`r`n", $utf8)
+    [IO.File]::WriteAllText($libJson, '{"exported": ["AppB/uBoxes.pas"], "hosts": ["' + (Join-Path $hostDir 'Host.dpr').Replace('\', '/') + '"]}', $utf8)
+    $r = Rpc 72 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":0}}'
+    Check 'lint hosts' (ToolText $r) @('24 findings in 1 file of 1 own unit', 'unused-symbol by reach: 2 exported (a library unit''s interface), 0 used only by exported ones, 20 private, 2 only assigned', '(unused-symbol leaves out 1 exported declaration a host program writes - "hosts" of pastree-mcp.json, word matches)')
+    $r = Rpc 73 'tools/call' '{"name":"lint","arguments":{"symbol":"NeverCalled, TCounter"}}'
+    Check 'lint hosts symbol' (ToolText $r) @('AppB\uBoxes.pas:31:11: used NeverCalled (procedure) - exported, and a host program writes it ("hosts" of pastree-mcp.json, a word match); nothing in the group uses it', 'AppB\uBoxes.pas:178:3: unused TCounter (class) - nothing in the group uses it')
+    $r = Rpc 74 'tools/call' '{"name":"status","arguments":{}}'
+    Check 'lint hosts status' (ToolText $r) @('  "exported": AppB/uBoxes.pas - lint unused-symbol says a library unit''s interface rows are exported', '1 program(s) whose uses of the library count (word matches)')
+    Remove-Item $libJson
+    Remove-Item -Recurse -Force $hostDir
+    # The reload its removal brings, taken by a call of its own.
+    $null = Rpc 75 'tools/call' '{"name":"find","arguments":{"query":"TCircle"}}'
+
     # A project file changed: the workspace reloads, and the note names it.
     (Get-Item (Join-Path $copy 'AppA\AppA.dproj')).LastWriteTime = (Get-Date).AddSeconds(5)
     $r = Rpc 13 'tools/call' '{"name":"find","arguments":{"query":"TCircle"}}'
@@ -1694,6 +1719,7 @@ try {
 }
 finally {
     Remove-Item -Recurse -Force $copy -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force ($copy + '-host') -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $mcpBuild -ErrorAction SilentlyContinue
 }
 

@@ -1245,6 +1245,27 @@ gap between the answers and the truth.
      with where (a routine a client plan named). "It goes with
      it" for one user; "used only by itself and by unused X" for recursion
      beside a caller.
+     A library (0.60.0, PasTree 0.205.0's TPasUnusedLibrary): `pastree-mcp.json`'s
+     `"exported"` - `true` for the units of the group's packages (.dpk), or
+     own unit paths and patterns (PasTree's `["source/*.pas"]`) - makes a
+     unit a library's: a declaration another unit can name (its interface,
+     a member of a type declared there that is not private) stays a row with
+     the `but` "exported", and a row only such rows use gets it down the
+     chain. `"hosts"` - the programs outside the group that use it (paths or
+     patterns of .dproj/.dpr) - weighs them instead: every own unit a host
+     file names is a library unit too, an exported row a host file writes
+     (a unit-level name in a file naming its unit, a member's name in any;
+     a word match, each host's directory tree as git lists it) is used and
+     left out with every row going back to it, said under the rows, and one
+     no host writes has no `but` of its own; host files not all read in
+     10 s leave a `but` on it. `symbol` answers "used ... a host program
+     writes it". With either key the header splits the unused-symbol rows
+     by reach: exported, used only by exported ones, private, only assigned
+     - on PasTree's own group 90 rows were 29 API its hosts call, 19 used by
+     `tools/*.dpr`, 35-40 dead; with tools in `also`, `exported` and
+     `hosts` 34 rows are left, 20 with no `but` (63 without the hosts: 55
+     exported). Neither key: the rule as before (the client group 8,342
+     rows before and after).
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.
