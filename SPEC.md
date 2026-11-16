@@ -1118,7 +1118,7 @@ gap between the answers and the truth.
      RTL's though the own unit is listed later) - and 3 another doubt
      (two DevExpress constructors' overloads, an unresolved member). Types
      (a second build, a class's hint silencing its own methods): no tagged
-     W1000 in the four members that built clean; AVImark and the server
+     W1000 in the four members that built clean; the main application and its server
      did not, a local class's hint breaking them. Of the 8,598 rows 4,207
      carry a `but`, 2,995 of them a record's field (the database record
      layouts, read whole). 224 s over the group's 1,965 own units, most of
@@ -1167,8 +1167,12 @@ gap between the answers and the truth.
      routines calling only each other are two rows). A `but` of their own:
      an assignment whose value code computes (a call, a property - removing
      it drops that), an interface held (it keeps the object alive), a row
-     using it with a `but`. A use the index cannot place (an include file,
-     a bare `inherited;`, a form) keeps it, as does a declaration bound more
+     using it with a `but`. A bare `inherited;` is a use placed in the
+     method it is written in (0.56.1, PasTree 0.197.0): a static method only
+     an unused descendant's hiding method runs that way is a row, "used
+     only by unused TChild.Reset" - before, any such call kept it. A use
+     the index cannot place (an include file) or a form file binding it
+     keeps it, as does a declaration bound more
      than 16 times (its references are not searched). With `symbol` the
      declarations the uses of one asked about sit in are weighed too, round
      by round (4 rounds, 300 declarations): a getter asked alone finds its

@@ -16,8 +16,11 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.56.0';
-  // 0.196.0: TPasUnusedSymbol.How / By / Writes - the rows made by rows
+  PasTreeMcpVersion = '0.56.1';
+  // 0.197.0: a bare inherited placed in the routine running it - a static
+  // method only a dead descendant runs that way is a row (without it, a
+  // verdict "used" where it is dead: the smoke's TPlainBox.Reset).
+  // 0.196.0 before: TPasUnusedSymbol.How / By / Writes - the rows made by rows
   // and the fields only assigned (a compile error without them).
   // 0.194.0 before: TPasWorkspace.CheckUnusedSymbols, lint's `symbol` (a
   // compile error without it).
@@ -53,7 +56,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.196.0';
+  cMinPasTreeVersion = '0.197.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.
