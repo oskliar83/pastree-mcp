@@ -14923,6 +14923,15 @@ begin
         begin
           LFirstA.Add(LKey, LA);
           LUnitOf.Add(LKey, LowerCase(LA.Proj.ModelFile(LS.UnitId)));
+        end
+        // An analysis that sees uses (the dead ones) says more than one that
+        // sees none: "used only by unused X" over "nothing uses it" (the
+        // client group: a helper's method the server's dead methods call,
+        // which the client's analysis does not compile).
+        else if Ord(LS.How) > Ord(LFirst[LKey].How) then
+        begin
+          LFirst[LKey] := LS;
+          LFirstA[LKey] := LA;
         end;
       end;
     end;
@@ -15121,7 +15130,9 @@ begin
             begin
               Inc(LA1.Held);
               Inc(LA1.Unused);
-              if LA1.RowA = nil then
+              // The analysis that sees its uses says why (LintUnusedSymbols).
+              if (LA1.RowA = nil) or
+                 (Ord(LChecks[LI].Row.How) > Ord(LA1.Row.How)) then
               begin
                 LA1.Row := LChecks[LI].Row;
                 LA1.RowA := LA;

@@ -1181,6 +1181,25 @@ gap between the answers and the truth.
      were rows; the other 6 - two getters of dead properties, four fields
      only assigned - were "used" until this. The header counts them:
      "of them N used only by unused ones, M only assigned".
+
+     Checked against dcc on the client group (2026-11-16, 0.56.2 with
+     PasTree 0.199.1; the 2026-11-14 method - every row marked deprecated,
+     the seven members built, a W1000 a live use): 6,524 rows in 276-289 s,
+     884 used only by unused ones, 382 only assigned. dcc warns inside a
+     deprecated method, a type's or constant's declaration and a property
+     (which takes no hint) whatever, so a site inside another row is a use
+     by a row; past those, no W1000 on a row only assigned (0 of 380), none
+     on one used only by unused ones but the audit script's own gaps (5 of
+     858: a multi-line constant initializer it does not mark, a published
+     property's accessors reported after its class's `end;`), and of the
+     plain rows one, with a `but`, as before. Found and fixed on the way:
+     raising the searched bound to 16 had made a declaration whose bindings
+     the search does not place a row (PasTree 0.199.1: the uses counted
+     above the hits placed keep it); a nameless type an anonymous method
+     makes was a row (25); and where analyses disagree on why a row is one,
+     the one that sees its uses says it - a record's method called only by
+     dead methods of the server, which the client's analysis does not
+     compile, read "nothing in the group uses it".
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.
