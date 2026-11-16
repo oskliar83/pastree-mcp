@@ -16,7 +16,10 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.57.0';
+  PasTreeMcpVersion = '0.57.1';
+  // 0.203.0: a package's `procedure Register;` not weighed (usPackageRegister,
+  // a member of TPasUnusedSkip the skip texts below must match), a doubt
+  // down the whole chain of rows made by rows, fewer noise doubts.
   // 0.202.0: WeighRemovedTogether and TPasUsesGraph (lint's check of the
   // rows removed together, moved there), PasTree.UsesEdit (`apply`), and
   // FindUnusedSymbols' AInRowTypes overload (0.201.0) - a compile error
@@ -64,7 +67,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.202.0';
+  cMinPasTreeVersion = '0.203.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.

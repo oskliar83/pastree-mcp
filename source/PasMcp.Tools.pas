@@ -14787,7 +14787,8 @@ const
     'operators', 'class constructors and destructors',
     'attribute constructors', 'the for-in protocol (GetEnumerator, MoveNext, Current)',
     'in generated units',
-    'in units that replace a library unit of their name');
+    'in units that replace a library unit of their name',
+    'Register procedures of a package''s units (the IDE calls them)');
 
 { unused-symbol: PasTree's FindUnusedSymbols (PasTree.Sema.Lint) over every
   analysis holding the units asked about, through the workspace (light mode
@@ -14900,7 +14901,10 @@ begin
         if LFirst.TryAdd(LKey, LS) then
         begin
           LFirstA.Add(LKey, LA);
-          LUnitOf.Add(LKey, LowerCase(LA.Proj.ModelFile(LS.UnitId)));
+          // Already there when an earlier analysis left it out as a member
+          // of a row type (its type used here): EListError on the client
+          // group's central interfaces unit.
+          LUnitOf.AddOrSetValue(LKey, LowerCase(LA.Proj.ModelFile(LS.UnitId)));
         end
         // An analysis that sees uses (the dead ones) says more than one that
         // sees none: "used only by unused X" over "nothing uses it" (the
@@ -14974,7 +14978,9 @@ const
     'the for-in protocol - `for ... in` runs it',
     'declared in a generated unit',
     'declared in a unit that replaces a library unit of its name - the '
-      + 'library .dcu files were compiled against the original');
+      + 'library .dcu files were compiled against the original',
+    'the Register procedure of a unit a package contains - the IDE calls it '
+      + 'when it loads the package');
 
   MAX_LINT_SYMBOLS = 50;
 
