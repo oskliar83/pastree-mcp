@@ -362,6 +362,19 @@ lint {"rules":"unused-symbol","file":"Shared/uShapes.pas","sure":true}
 lint {"file":"AppB/uBoxes.pas","kinds":"nope"}
 lint {"rules":"unused-uses","kinds":"field"}
 lint {"symbol":"NeverCalled","sure":true}
+lint {"symbol":"Reset"}
+lint {"symbol":"Sort"}
+lint {"symbol":"AValue","file":"AppB/uBoxes.pas","line":189}
+lint {"symbol":"P","file":"AppB/uBoxes.pas"}
+lint {"name":"P","file":"AppB/uBoxes.pas","line":206}
+lint {"symbol":"Nope","file":"AppB/uBoxes.pas","line":206}
+lint {"file":"AppB/uBoxes.pas","line":206}
+lint {"symbol":"P, AValue","file":"AppB/uBoxes.pas","line":206}
+lint {"symbol":"Recur, Ghost, NeverCalled, RecurCaller"}
+lint {"symbol":"GhostOfAComment"}
+references {"symbol":"AValue","file":"AppB/uBoxes.pas","line":189}
+references {"symbol":"Nope","file":"AppB/uBoxes.pas","line":189}
+references {"symbol":"P","file":"AppB/uBoxes.pas"}
 lint {"file":"AppB/AppB.dpr"}
 lint {"file":"AppB/uLintBase.pas"}
 lint {"file":"AppB/uLintLast.pas"}

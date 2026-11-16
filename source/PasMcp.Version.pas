@@ -16,7 +16,11 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.57.1';
+  PasTreeMcpVersion = '0.59.0';
+  // 0.204.0: an interface's members weighed (a dispinterface's not:
+  // usInterface), a class method only own interfaces name a row made by
+  // them, and a parameter or local answered by CheckUnusedSymbols (a new
+  // TPasUnusedSkip, usSignature, the skip texts below must match).
   // 0.203.0: a package's `procedure Register;` not weighed (usPackageRegister,
   // a member of TPasUnusedSkip the skip texts below must match), a doubt
   // down the whole chain of rows made by rows, fewer noise doubts.
@@ -67,7 +71,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.203.0';
+  cMinPasTreeVersion = '0.204.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.

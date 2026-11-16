@@ -251,6 +251,36 @@ begin
   FStamp := 1;
 end;
 
+// lint's wording: Recur calls itself and only the unused RecurCaller calls
+// it; the two Ghost overloads, both unused, share one `but` - their name is
+// written in a branch this configuration does not compile. GhostOfAComment
+// is written here alone, in no code.
+procedure Recur(N: Integer);
+begin
+  if N > 0 then
+    Recur(N - 1);
+end;
+
+procedure RecurCaller;
+begin
+  Recur(1);
+end;
+
+procedure Ghost(A: Integer); overload;
+begin
+end;
+
+procedure Ghost(const S: string); overload;
+begin
+end;
+
+{$IFDEF FIXTURE_NEVER}
+procedure GhostUser;
+begin
+  Ghost(1);
+end;
+{$ENDIF}
+
 initialization
   TDeadHost(nil).Touch;
 end.

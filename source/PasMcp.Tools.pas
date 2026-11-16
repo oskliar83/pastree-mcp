@@ -1470,9 +1470,15 @@ begin
   LFile := ArgFile(AWs, AArgs);
   LLine := ArgInt(AArgs, 'line', 0);
   LName := ArgStr(AArgs, 'name');
+  LCol := ArgInt(AArgs, 'column', 0);
+  // `symbol` with `file` + `line` is the name on that line: taken for the
+  // routine around the line, `references` of a parameter `ACommand` at
+  // line 278 answered for the routine declared there - a wrong answer in
+  // a confident form (a replayed session). Not on the line: refused below.
+  if (LName = '') and (LCol <= 0) and (LLine > 0) then
+    LName := ArgStr(AArgs, 'symbol');
   if LName.Contains('.') then
     LName := Copy(LName, LastDelimiter('.', LName) + 1, MaxInt);
-  LCol := ArgInt(AArgs, 'column', 0);
   if not TFile.Exists(LFile) then
     raise EToolError.Create('no such file: ' + LFile);
   // A file alone is its unit (rename_plan's "a unit, its name or its file"):
@@ -2422,11 +2428,159 @@ type
     Stamp: TMcpFileStamp;
     Lower: string;
     Lines: TArray<string>;
+    // Its identifiers (a dotted name's segments apart), lower-cased, sorted,
+    // each once: lint asks thousands of names of the same files
+    // (LintOutsideButs), and a word looked up beats a text searched.
+    Words: TArray<string>;
   end;
 
 var
   // By lower-cased path; the executor's alone, as the index is.
   GOutsideTexts: TDictionary<string, TOutsideText>;
+
+// AFile as GOutsideTexts holds it, read again when its stamp changed. False
+// when it cannot be read.
+function OutsideTextOf(const AFile: string; out AText: TOutsideText): Boolean;
+var
+  LStamp: TMcpFileStamp;
+  LSet: TDictionary<string, Boolean>;
+  LStart: Integer;
+begin
+  Result := False;
+  if not StampOf(AFile, LStamp) then
+    Exit;
+  if GOutsideTexts = nil then
+    GOutsideTexts := TDictionary<string, TOutsideText>.Create;
+  if GOutsideTexts.TryGetValue(LowerCase(AFile), AText) and
+     SameStamp(AText.Stamp, LStamp) then
+    Exit(True);
+  AText := Default(TOutsideText);
+  AText.Stamp := LStamp;
+  try
+    AText.Lines := TFile.ReadAllLines(AFile);   // BOM-aware
+  except
+    Exit;
+  end;
+  AText.Lower := LowerCase(string.Join(#10, AText.Lines));
+  LSet := TDictionary<string, Boolean>.Create;
+  try
+    var LI := 1;
+    while LI <= Length(AText.Lower) do
+      if IsIdentChar(AText.Lower[LI]) and not CharInSet(AText.Lower[LI],
+         ['0'..'9']) then
+      begin
+        LStart := LI;
+        while (LI <= Length(AText.Lower)) and IsIdentChar(AText.Lower[LI]) do
+          Inc(LI);
+        LSet.AddOrSetValue(Copy(AText.Lower, LStart, LI - LStart), True);
+      end
+      else
+        Inc(LI);
+    AText.Words := LSet.Keys.ToArray;
+  finally
+    LSet.Free;
+  end;
+  TArray.Sort<string>(AText.Words, TStringComparer.Ordinal);
+  GOutsideTexts.AddOrSetValue(LowerCase(AFile), AText);
+  Result := True;
+end;
+
+// Does AText write the lower-cased AWord as an identifier?
+function OutsideHasWord(const AText: TOutsideText; const AWord: string): Boolean;
+var
+  LAt: Integer;
+begin
+  Result := TArray.BinarySearch<string>(AText.Words, AWord, LAt,
+    TStringComparer.Ordinal);
+end;
+
+// Does the file of AText use unit AUnit and write AWord in code? ALine is the
+// first line writing it outside comments and strings (a unit's own name:
+// its `uses` entry), 1-based. A word match, not resolved.
+function OutsideFileUses(const AText: TOutsideText; const AUnit,
+  AWord: string; out ALine: Integer; out ALineText: string): Boolean;
+var
+  LNamed: Boolean;
+  LCol: Integer;
+begin
+  ALine := 0;
+  ALineText := '';
+  for var LSeg in LowerCase(AUnit).Split(['.']) do
+    if not OutsideHasWord(AText, LSeg) then
+      Exit(False);
+  if not OutsideHasWord(AText, LowerCase(AWord)) then
+    Exit(False);
+  LNamed := False;
+  for var LIdx := 0 to High(AText.Lines) do
+  begin
+    // A line naming the unit counts too: `Unit.Routine(...)` is a use
+    // written qualified (skipped before - the only call of a client group
+    // routine went unsaid); a `uses` entry does not write the word.
+    if FindWord(AText.Lines[LIdx], AUnit) > 0 then
+      LNamed := True;
+    if ALine = 0 then
+    begin
+      // FindWord prefers a place in code; PositionLexeme knows a comment
+      // opened on an earlier line.
+      LCol := FindWord(AText.Lines[LIdx], AWord);
+      if (LCol > 0) and (PositionLexeme(AText.Lines, LIdx + 1, LCol) = '') then
+      begin
+        ALine := LIdx + 1;
+        ALineText := CleanLine(AText.Lines[LIdx]);
+      end;
+    end;
+    if LNamed and (ALine > 0) then
+      Break;
+  end;
+  Result := LNamed and (ALine > 0);
+end;
+
+// The `also` entry of ALSO_FILE_NAME that indexes the projects among AFiles
+// (files outside the index): a directory's projects as a pattern.
+function AlsoHint(AWs: TMcpWorkspace; const AFiles: TArray<string>): string;
+var
+  LProjects, LEntries, LDirs: TArray<string>;
+  LInDir: Integer;
+  LRel, LExt: string;
+begin
+  LProjects := nil;
+  for var LF in AFiles do
+  begin
+    LExt := LowerCase(ExtractFileExt(LF));
+    if ((LExt = '.dpr') or (LExt = '.dpk')) and
+       StartsText(IncludeTrailingPathDelimiter(AWs.Root), LF) and
+       (IndexText(LF, LProjects) < 0) then
+      LProjects := LProjects + [LF];
+  end;
+  LEntries := nil;
+  LDirs := nil;
+  for var LP in LProjects do
+  begin
+    LInDir := 0;
+    for var LQ in LProjects do
+      if SameText(ExtractFileDir(LQ), ExtractFileDir(LP)) and
+         SameText(ExtractFileExt(LQ), ExtractFileExt(LP)) then
+        Inc(LInDir);
+    LRel := AWs.RelPath(LP).Replace('\', '/');
+    if LInDir > 1 then
+    begin
+      LRel := AWs.RelPath(TPath.Combine(ExtractFileDir(LP), '*' +
+        LowerCase(ExtractFileExt(LP)))).Replace('\', '/');
+      if IndexText(LRel, LDirs) >= 0 then
+        Continue;
+      LDirs := LDirs + [LRel];
+    end;
+    LEntries := LEntries + ['"' + LRel + '"'];
+  end;
+  if LEntries <> nil then
+    Result := Format('to index them with the group: "also": [%s] in %s '
+      + 'beside %s - read on the next call', [string.Join(', ', LEntries),
+      ALSO_FILE_NAME, ExtractFileName(AWs.ProjectFile)])
+  else
+    Result := Format('to index them with the group: the project that '
+      + 'compiles them, in "also" of %s beside %s', [ALSO_FILE_NAME,
+      ExtractFileName(AWs.ProjectFile)]);
+end;
 
 { The uses of an own declaration that no answer counts: the files outside the
   index that use its unit and write its name (TMcpWorkspace.UnindexedSources).
@@ -2459,14 +2613,12 @@ var
   LAsk: TAsk;
   LRows: TList<TRow>;
   LRow: TRow;
-  LFiles, LProjects, LEntries, LDirs: TArray<string>;
+  LFiles, LProjects: TArray<string>;
   LText: TOutsideText;
-  LStamp: TMcpFileStamp;
-  LSearched, LInDir: Integer;
-  LCut, LNamed, LFound: Boolean;
+  LSearched: Integer;
+  LCut, LFound: Boolean;
   LSW: TStopwatch;
   LSb: TStringBuilder;
-  LRel, LExt: string;
 begin
   Result := '';
   LAsks := nil;
@@ -2501,8 +2653,6 @@ begin
   LFiles := AWs.UnindexedSources(LCut);
   if LFiles = nil then
     Exit;
-  if GOutsideTexts = nil then
-    GOutsideTexts := TDictionary<string, TOutsideText>.Create;
   LSearched := 0;
   LSW := TStopwatch.StartNew;
   LRows := TList<TRow>.Create;
@@ -2513,48 +2663,16 @@ begin
       if LSW.ElapsedMilliseconds > SCAN_MS then
         Break;
       Inc(LSearched);
-      if not StampOf(LFile, LStamp) then
+      if not OutsideTextOf(LFile, LText) then
         Continue;
-      if not GOutsideTexts.TryGetValue(LowerCase(LFile), LText) or
-         not SameStamp(LText.Stamp, LStamp) then
-      begin
-        LText.Stamp := LStamp;
-        try
-          LText.Lines := TFile.ReadAllLines(LFile);   // BOM-aware
-        except
-          Continue;
-        end;
-        LText.Lower := LowerCase(string.Join(#10, LText.Lines));
-        GOutsideTexts.AddOrSetValue(LowerCase(LFile), LText);
-      end;
       for var LA in LAsks do
       begin
-        if (Pos(LowerCase(LA.UnitName), LText.Lower) = 0) or
-           (Pos(LowerCase(LA.Word), LText.Lower) = 0) then
-          Continue;
-        LNamed := False;
         LRow := Default(TRow);
-        for var LIdx := 0 to High(LText.Lines) do
+        if OutsideFileUses(LText, LA.UnitName, LA.Word, LRow.Line,
+           LRow.Text) then
         begin
-          if FindWord(LText.Lines[LIdx], LA.UnitName) > 0 then
-          begin
-            LNamed := True;
-            // A unit's own uses are its `uses` entry.
-            if not SameText(LA.Word, LA.UnitName) then
-              Continue;
-          end;
-          if (LRow.Line = 0) and (FindWord(LText.Lines[LIdx], LA.Word) > 0) then
-          begin
-            LRow.FilePath := LFile;
-            LRow.Word := LA.Word;
-            LRow.Line := LIdx + 1;
-            LRow.Text := CleanLine(LText.Lines[LIdx]);
-          end;
-          if LNamed and (LRow.Line > 0) then
-            Break;
-        end;
-        if LNamed and (LRow.Line > 0) then
-        begin
+          LRow.FilePath := LFile;
+          LRow.Word := LA.Word;
           LRows.Add(LRow);
           Break;
         end;
@@ -2580,40 +2698,8 @@ begin
     // The entry that indexes them: a directory's projects as a pattern.
     LProjects := nil;
     for var LR in LRows do
-    begin
-      LExt := LowerCase(ExtractFileExt(LR.FilePath));
-      if ((LExt = '.dpr') or (LExt = '.dpk')) and
-         StartsText(IncludeTrailingPathDelimiter(AWs.Root), LR.FilePath) then
-        LProjects := LProjects + [LR.FilePath];
-    end;
-    LEntries := nil;
-    LDirs := nil;
-    for var LP in LProjects do
-    begin
-      LInDir := 0;
-      for var LQ in LProjects do
-        if SameText(ExtractFileDir(LQ), ExtractFileDir(LP)) and
-           SameText(ExtractFileExt(LQ), ExtractFileExt(LP)) then
-          Inc(LInDir);
-      LRel := AWs.RelPath(LP).Replace('\', '/');
-      if LInDir > 1 then
-      begin
-        LRel := AWs.RelPath(TPath.Combine(ExtractFileDir(LP), '*' +
-          LowerCase(ExtractFileExt(LP)))).Replace('\', '/');
-        if IndexText(LRel, LDirs) >= 0 then
-          Continue;
-        LDirs := LDirs + [LRel];
-      end;
-      LEntries := LEntries + ['"' + LRel + '"'];
-    end;
-    if LEntries <> nil then
-      LSb.AppendLine(Format('to index them with the group: "also": [%s] in %s '
-        + 'beside %s - read on the next call', [string.Join(', ', LEntries),
-        ALSO_FILE_NAME, ExtractFileName(AWs.ProjectFile)]))
-    else
-      LSb.AppendLine(Format('to index them with the group: the project that '
-        + 'compiles them, in "also" of %s beside %s', [ALSO_FILE_NAME,
-        ExtractFileName(AWs.ProjectFile)]));
+      LProjects := LProjects + [LR.FilePath];
+    LSb.AppendLine(AlsoHint(AWs, LProjects));
     if LSearched < Length(LFiles) then
       LSb.AppendLine(Format('(%d of %d files outside the index searched - the '
         + 'search stops after %d s)', [LSearched, Length(LFiles),
@@ -2856,6 +2942,96 @@ begin
       Length(Result));
 end;
 
+{ Where the group's own units write AWord only inside comments or string
+  literals, never in code: a routine a plan named was only a comment's -
+  the refusal said "no declaration named" alone, and the
+  agent grepped (a replayed session). '' when a unit writes it in code (a
+  name the analysis did not resolve - another tool's question), or nowhere.
+  The units read from disk until SCAN_MS runs out; said so when cut. }
+function CommentOnlyNote(AWs: TMcpWorkspace; const AWord: string): string;
+const
+  SCAN_MS = 2000;
+  MAX_SITES = 3;
+var
+  LSeen: TDictionary<string, Boolean>;
+  LSites: TArray<string>;
+  LLines: TArray<string>;
+  LText, LLower, LFile, LIn: string;
+  LSites2, LSearched, LTotal, LCol: Integer;
+  LComment, LString: Boolean;
+  LSW: TStopwatch;
+begin
+  Result := '';
+  if (AWord = '') or IsWildPattern(AWord) then
+    Exit;
+  LLower := LowerCase(AWord);
+  LSites := nil;
+  LSites2 := 0;
+  LSearched := 0;
+  LTotal := 0;
+  LComment := False;
+  LString := False;
+  LSW := TStopwatch.StartNew;
+  LSeen := TDictionary<string, Boolean>.Create;
+  try
+    for var LA in AWs.Analyses do
+    begin
+      if LA.Proj = nil then
+        Continue;
+      for var LMid := 0 to LA.Proj.ModelCount - 1 do
+      begin
+        LFile := LA.Proj.ModelFile(LMid);
+        if not AWs.IsOwnFile(LFile) or not LSeen.TryAdd(LowerCase(LFile),
+           True) then
+          Continue;
+        Inc(LTotal);
+        if LSW.ElapsedMilliseconds > SCAN_MS then
+          Continue;
+        Inc(LSearched);
+        try
+          LText := TFile.ReadAllText(LFile);   // BOM-aware
+        except
+          Continue;
+        end;
+        if not ContainsText(LText, AWord) then
+          Continue;
+        LLines := LText.Split([#13#10, #10, #13]);
+        for var LIdx := 0 to High(LLines) do
+        begin
+          if Pos(LLower, LowerCase(LLines[LIdx])) = 0 then
+            Continue;
+          // FindWord prefers a place in code on the line; PositionLexeme
+          // knows a comment opened on an earlier line.
+          LCol := FindWord(LLines[LIdx], AWord);
+          if LCol = 0 then
+            Continue;
+          LIn := PositionLexeme(LLines, LIdx + 1, LCol);
+          if LIn = '' then
+            Exit('');           // in code: not this note's case
+          LComment := LComment or (LIn = 'a comment');
+          LString := LString or (LIn <> 'a comment');
+          Inc(LSites2);
+          if Length(LSites) < MAX_SITES then
+            LSites := LSites + [Format('%s:%d', [AWs.RelPath(LFile),
+              LIdx + 1])];
+        end;
+      end;
+    end;
+  finally
+    LSeen.Free;
+  end;
+  if LSites = nil then
+    Exit;
+  Result := Format('`%s` is written only in %s of the group''s own units, '
+    + 'never in code: %s%s', [AWord, IfThen(LComment and LString,
+    'comments and string literals', IfThen(LComment, 'comments',
+    'string literals')), string.Join(', ', LSites), IfThen(LSites2 >
+    Length(LSites), Format(' and %d more', [LSites2 - Length(LSites)]), '')]);
+  if LSearched < LTotal then
+    Result := Result + Format(' (%d of %d own units searched - the search '
+      + 'stops after %d s)', [LSearched, LTotal, SCAN_MS div 1000]);
+end;
+
 // The refusal of a name no declaration matches, for every tool that takes
 // `symbol`: what was searched, and where the name is written outside it.
 function NoSuchDeclaration(AWs: TMcpWorkspace; const ASymbol: string): string;
@@ -2882,9 +3058,14 @@ begin
       LSb.Free;
     end;
   end;
-  Result := Format('no declaration named `%s` among %s - a local or a '
-    + 'parameter is addressed by `file` + `line` + `name`', [ASymbol,
-    IndexScope(AWs)]);
+  LNote := CommentOnlyNote(AWs, LLast);
+  if LNote <> '' then
+    Result := Format('no declaration named `%s` among %s', [ASymbol,
+      IndexScope(AWs)]) + sLineBreak + LNote
+  else
+    Result := Format('no declaration named `%s` among %s - a local or a '
+      + 'parameter is addressed by `file` + `line` + `name`', [ASymbol,
+      IndexScope(AWs)]);
   // The names like it, said here: the agent's next call was `find` with
   // `*name*`, and a guessed name rarely contains the real one (a field
   // report). Among the group's own units: a wildcard over the libraries
@@ -2986,10 +3167,39 @@ end;
 // agent meant it - before, it addressed the unit, and `source` of
 // TPurgeForm.GetMorestuffFieldCode with its file answered "frmPurge is a
 // unit". The declarations of that name in that file.
-function NamedInFile(AWs: TMcpWorkspace; AArgs: TJSONObject): TArray<TTarget>;
+// The locals, constants and parameters named AName in the bodies of the
+// unit AFile, at most ALimit.
+function LocalsInFile(AWs: TMcpWorkspace; const AName, AKind, AFile: string;
+  ALimit: Integer; out AMore: Integer): TArray<TTarget>;
+var
+  LExtras: TFindExtras;
+begin
+  AMore := 0;
+  if (AName = '') or IsWildPattern(AName) then
+    Exit(nil);
+  LExtras := TFindExtras.Create;
+  try
+    LExtras.Locals := True;
+    LExtras.OnlyFile := AFile;
+    Result := ResolveName(AWs, AName, AKind, True, ALimit, AMore, False,
+      LExtras);
+  finally
+    LExtras.Free;
+  end;
+end;
+
+// With ALocals, a name no declaration of the file has is each local,
+// constant or parameter of that name in its bodies (lint answers each);
+// without, the refusal lists them with the line that addresses each - it
+// said "no declaration named" and nothing else, and `lint` of a parameter
+// by `file` + `symbol` came to that (a replayed session).
+function NamedInFile(AWs: TMcpWorkspace; AArgs: TJSONObject;
+  ALocals: Boolean = False): TArray<TTarget>;
 var
   LFile: string;
   LMore: Integer;
+  LLocals: TArray<TTarget>;
+  LSb: TStringBuilder;
 begin
   LFile := ArgFile(AWs, AArgs);
   Result := nil;
@@ -2998,9 +3208,28 @@ begin
     if SameText(LC.DeclFile, LFile) then
       Result := Result + [LC];
   if Length(Result) = 0 then
-    raise EToolError.CreateFmt('no declaration named `%s` in %s - without '
-      + '`file`, the name is looked for in the whole group', [ArgStr(AArgs,
-      'symbol'), AWs.RelPath(LFile)]);
+  begin
+    LLocals := LocalsInFile(AWs, ArgStr(AArgs, 'symbol'), ArgStr(AArgs,
+      'kind'), LFile, 20, LMore);
+    if ALocals and (LLocals <> nil) then
+      Result := LLocals
+    else if LLocals <> nil then
+    begin
+      LSb := TStringBuilder.Create;
+      try
+        LSb.AppendLine(Format('no declaration named `%s` in %s', [ArgStr(AArgs,
+          'symbol'), AWs.RelPath(LFile)]));
+        AppendLocals(LSb, AWs, ArgStr(AArgs, 'symbol'), LLocals, LMore, '  ');
+        raise EToolError.Create(LSb.ToString.TrimRight);
+      finally
+        LSb.Free;
+      end;
+    end
+    else
+      raise EToolError.CreateFmt('no declaration named `%s` in %s - without '
+        + '`file`, the name is looked for in the whole group', [ArgStr(AArgs,
+        'symbol'), AWs.RelPath(LFile)]);
+  end;
   for var LIdx := 0 to High(Result) do
     MapToOthers(AWs, Result[LIdx]);
 end;
@@ -13207,6 +13436,10 @@ type
     Kind: string;
     How: TPasUnusedHow;        // unused-symbol: why a row is one
     Entry: string;             // unused-uses: the entry's name, as written
+    // unused-symbol: the `but`, apart from Text - a `but` many rows share is
+    // said once (AppendButRows); '' with none. The uses rules keep theirs
+    // in Text.
+    But: string;
   end;
 
   // What lint reads of one analysis more than once: the interface names of
@@ -14783,12 +15016,15 @@ const
   cUnusedSkipText: array[TPasUnusedSkip] of string = (
     'published (forms, RTTI)',
     'virtual, dynamic, abstract, override or message methods',
-    'members of an interface', 'methods an interface of their class names',
+    'members of a dispinterface',
+    'methods a library interface of their class names',
     'operators', 'class constructors and destructors',
     'attribute constructors', 'the for-in protocol (GetEnumerator, MoveNext, Current)',
     'in generated units',
     'in units that replace a library unit of their name',
-    'Register procedures of a package''s units (the IDE calls them)');
+    'Register procedures of a package''s units (the IDE calls them)',
+    'parameters of a routine whose address is taken, or of an external, '
+      + 'exported or assembler one');
 
 { unused-symbol: PasTree's FindUnusedSymbols (PasTree.Sema.Lint) over every
   analysis holding the units asked about, through the workspace (light mode
@@ -14796,47 +15032,278 @@ const
   only when every analysis holding its unit finds it unused: one that only
   another member's defines compile is used there. }
 // The text of an unused-symbol row after its name and head: why it is one
-// (TPasUnusedHow) and its doubts. One used only by rows names them, at most
-// five ("itself" for recursion); one only assigned names where, at most
-// three.
+// (TPasUnusedHow), its doubts apart (UnusedBut). One used only by rows names
+// them, at most five - its own body ('' in By, recursion) said apart:
+// "used only by unused itself, X" read as a slip; one only assigned names
+// where, at most three.
 function UnusedWhy(const ARow: TPasUnusedSymbol): string;
 
   function Names(const AList: TArray<string>; AMax: Integer): string;
   begin
     Result := '';
     for var LI := 0 to Min(High(AList), AMax - 1) do
-      Result := Result + IfThen(Result <> '', ', ') + IfThen(AList[LI] = '',
-        'itself', AList[LI]);
+      Result := Result + IfThen(Result <> '', ', ') + AList[LI];
     if Length(AList) > AMax then
       Result := Result + Format(' and %d more', [Length(AList) - AMax]);
   end;
 
+var
+  LOthers: TArray<string>;
+  LSelf: Boolean;
 begin
+  LOthers := nil;
+  LSelf := False;
+  for var LB in ARow.By do
+    if LB = '' then
+      LSelf := True
+    else
+      LOthers := LOthers + [LB];
   case ARow.How of
     uhOnlyByUnused:
-      if (Length(ARow.By) = 1) and (ARow.By[0] = '') then
+      if LOthers = nil then
         Result := 'only its own body uses it'
       else
-        Result := Format('used only by unused %s - it goes with them',
-          [Names(ARow.By, 5)]);
+        Result := Format('used only by %sunused %s - it goes with %s',
+          [IfThen(LSelf, 'itself and by ', ''), Names(LOthers, 5),
+          IfThen(Length(LOthers) = 1, 'it', 'them')]);
     uhOnlyWritten:
       begin
         Result := Format('only assigned (%s), never read', [Names(ARow.Writes,
           3)]);
-        if ARow.By <> nil then
+        if LOthers <> nil then
           Result := Result + Format('; its other uses are in unused %s',
-            [Names(ARow.By, 5)]);
+            [Names(LOthers, 5)]);
       end;
   else
     Result := 'nothing in the group uses it';
   end;
-  if ARow.Doubts <> nil then
-    Result := Result + ', but ' + string.Join('; ', ARow.Doubts);
+end;
+
+// The `but` of an unused-symbol row: its doubts, '' with none.
+function UnusedBut(const ARow: TPasUnusedSymbol): string;
+begin
+  Result := string.Join('; ', ARow.Doubts);
+end;
+
+type
+  // A declaration whose uses outside the index lint asks about: the unit
+  // declaring it and its name's last segment.
+  TOutsideAsk = record
+    UnitName, Word: string;
+  end;
+
+{ For each ask, the files outside the index that use its unit and write its
+  name (OutsideFileUses) - what `references` and `callers` add as "not
+  counted above", said on lint's row or `symbol`'s verdict: a declaration
+  only tools/*.dpr or an orphan unit uses was a row with no `but` (PasTree's
+  TPasProject, a client group routine, a replayed session). Each
+  site 'file:line'. The files' words are kept (OutsideTextOf) and the asks
+  looked up by word, so the rows of a whole group cost a look-up per word of
+  each file, not a search per row. AFoot: the `also` entry that indexes them
+  and whether the search was cut; '' with no site. }
+function OutsideAskSites(AWs: TMcpWorkspace; const AAsks: TArray<TOutsideAsk>;
+  out AFoot: string): TArray<TArray<string>>;
+const
+  SCAN_MS = 2000;
+var
+  LByWord: TDictionary<string, TArray<Integer>>;
+  LFiles, LHitFiles: TArray<string>;
+  LText: TOutsideText;
+  LIdxs: TArray<Integer>;
+  LCut, LHit: Boolean;
+  LSearched, LLine: Integer;
+  LLineText, LKey: string;
+  LSW: TStopwatch;
+  LSites: TArray<TArray<string>>;
+
+  procedure Check(const AFile: string; const AAt: TArray<Integer>);
+  begin
+    for var LI in AAt do
+      if OutsideFileUses(LText, AAsks[LI].UnitName, AAsks[LI].Word, LLine,
+         LLineText) then
+      begin
+        LSites[LI] := LSites[LI] + [Format('%s:%d', [AWs.RelPath(AFile),
+          LLine])];
+        LHit := True;
+      end;
+  end;
+
+begin
+  SetLength(Result, Length(AAsks));
+  AFoot := '';
+  if AAsks = nil then
+    Exit;
+  // Outside the index as the full analysis has it (light mode).
+  QClosure(AWs);
+  LFiles := AWs.UnindexedSources(LCut);
+  if LFiles = nil then
+    Exit;
+  SetLength(LSites, Length(AAsks));
+  LHitFiles := nil;
+  LSearched := 0;
+  LByWord := TDictionary<string, TArray<Integer>>.Create;
+  try
+    for var LI := 0 to High(AAsks) do
+    begin
+      LKey := LowerCase(AAsks[LI].Word);
+      if not LByWord.TryGetValue(LKey, LIdxs) then
+        LIdxs := nil;
+      LByWord.AddOrSetValue(LKey, LIdxs + [LI]);
+    end;
+    LSW := TStopwatch.StartNew;
+    for var LFile in LFiles do
+    begin
+      if LSW.ElapsedMilliseconds > SCAN_MS then
+        Break;
+      Inc(LSearched);
+      if not OutsideTextOf(LFile, LText) then
+        Continue;
+      LHit := False;
+      // The smaller side walked, the other looked up.
+      if LByWord.Count < Length(LText.Words) then
+      begin
+        for var LP in LByWord do
+          if OutsideHasWord(LText, LP.Key) then
+            Check(LFile, LP.Value);
+      end
+      else
+        for var LW in LText.Words do
+          if LByWord.TryGetValue(LW, LIdxs) then
+            Check(LFile, LIdxs);
+      if LHit then
+        LHitFiles := LHitFiles + [LFile];
+    end;
+  finally
+    LByWord.Free;
+  end;
+  Log('  lint: %d declarations asked in %d of %d files outside the index: '
+    + '%d ms', [Length(AAsks), LSearched, Length(LFiles),
+    LSW.ElapsedMilliseconds]);
+  Result := LSites;
+  if LHitFiles = nil then
+    Exit;
+  AFoot := '(the files outside the index a `but` names are word matches, '
+    + 'not resolved - ' + AlsoHint(AWs, LHitFiles) + ')';
+  if LSearched < Length(LFiles) then
+    AFoot := AFoot + sLineBreak + Format('(%d of %d files outside the index '
+      + 'searched - the search stops after %d s)', [LSearched, Length(LFiles),
+      SCAN_MS div 1000]);
+  if LCut then
+    AFoot := AFoot + sLineBreak + '(the walk of the group directory stopped '
+      + 'after 2 s - the files beyond it were not searched)';
+end;
+
+// The `but` of a declaration written outside the index (OutsideAskSites).
+function OutsideBut(const ASites: TArray<string>): string;
+const
+  MAX_SITES = 2;
+begin
+  Result := '';
+  if ASites = nil then
+    Exit;
+  Result := Format('%s outside the index - not compiled by the group - '
+    + 'use%1:s its unit and write%1:s the name: %2:s', [Plural(Length(ASites),
+    'file'), IfThen(Length(ASites) = 1, 's', ''), string.Join(', ',
+    Copy(ASites, 0, MAX_SITES))]);
+  if Length(ASites) > MAX_SITES then
+    Result := Result + Format(' and %d more', [Length(ASites) - MAX_SITES]);
+end;
+
+// AText and ABut joined as a row ends: "..., but ...".
+function WithBut(const AText, ABut: string): string;
+begin
+  Result := AText;
+  if ABut <> '' then
+    Result := Result + ', but ' + ABut;
+end;
+
+{ ALines, each ending in its `but` (ABut, '' for none). A `but` two or more
+  lines share, longer than a reference to it, is said once above them,
+  numbered, and each line ends in "but [N]": on the client group 112 of the
+  157 rows of one unit carried the same 250-character `but` (an uncompiled
+  branch of one file, another overload in use) - 7,100 tokens for 100
+  rows. }
+procedure AppendButLines(ASb: TStringBuilder; const ALines,
+  AButs: TArray<string>);
+const
+  MIN_LEN = 24;
+var
+  LCount, LNum: TDictionary<string, Integer>;
+  LOrder: TArray<string>;
+  LN: Integer;
+begin
+  LCount := TDictionary<string, Integer>.Create;
+  LNum := TDictionary<string, Integer>.Create;
+  try
+    for var LB in AButs do
+      if Length(LB) >= MIN_LEN then
+      begin
+        if not LCount.TryGetValue(LB, LN) then
+          LN := 0;
+        LCount.AddOrSetValue(LB, LN + 1);
+      end;
+    LOrder := nil;
+    for var LB in AButs do
+      if (Length(LB) >= MIN_LEN) and (LCount[LB] > 1) and
+         not LNum.ContainsKey(LB) then
+      begin
+        LNum.Add(LB, LNum.Count + 1);
+        LOrder := LOrder + [LB];
+      end;
+    if LOrder <> nil then
+    begin
+      ASb.AppendLine('a "but" several rows share is said once - "but [N]" '
+        + 'on a row is:');
+      for var LI := 0 to High(LOrder) do
+        ASb.AppendLine(Format('  [%d] %s (%d rows)', [LI + 1, LOrder[LI],
+          LCount[LOrder[LI]]]));
+    end;
+    for var LI := 0 to High(ALines) do
+      if LNum.TryGetValue(AButs[LI], LN) then
+        ASb.AppendLine(Format('%s, but [%d]', [ALines[LI], LN]))
+      else
+        ASb.AppendLine(WithBut(ALines[LI], AButs[LI]));
+  finally
+    LNum.Free;
+    LCount.Free;
+  end;
+end;
+
+const
+  // Namesakes of a bare name `symbol` answers, each with its place; past
+  // them, counted.
+  MAX_LINT_NAMESAKES = 20;
+
+{ The declarations a bare name in lint's `symbol` asks about: every own one
+  of that name (to MAX_LINT_NAMESAKES; ACut counts the rest) - a library
+  namesake dropped when an own unit has one (`OffsetOf` matched
+  PasTree's TPasTokenStream.OffsetOf beside the own routine). A refusal
+  listing 15 private LogDiagnostic procedures cost a second call in 3 of 5
+  cases of a replayed session, and each verdict says where it is. No own
+  declaration: as every tool resolves a name (a library one, or the refusal). }
+function LintNamesakes(AWs: TMcpWorkspace; const ASymbol, AKind: string;
+  out ACut: Integer): TArray<TTarget>;
+begin
+  ACut := 0;
+  Result := ResolveName(AWs, ASymbol, AKind, True, MAX_LINT_NAMESAKES, ACut);
+  if Result = nil then
+  begin
+    ACut := 0;
+    Exit(ResolveNamedOrOverloads(AWs, ASymbol, AKind));
+  end;
+  for var LIdx := 0 to High(Result) do
+    MapToOthers(AWs, Result[LIdx]);
 end;
 
 procedure LintUnusedSymbols(AWs: TMcpWorkspace; const AFiles: TArray<string>;
-  ARows: TList<TLintRow>; out ASkipped: string; out AInRow: Integer);
+  ARows: TList<TLintRow>; out ASkipped: string; out AInRow: Integer;
+  out AFoot: string);
 var
+  LAsks: TArray<TOutsideAsk>;
+  LAskRow: TArray<Integer>;
+  LAsk: TOutsideAsk;
+  LSites: TArray<TArray<string>>;
+  LModel: string;
   LHeld, LUnusedIn: TDictionary<string, Integer>;
   LInRowKeys: TDictionary<string, Boolean>;
   LInRow: TArray<TPasUnusedSymbol>;
@@ -14853,6 +15320,9 @@ var
 begin
   ASkipped := '';
   AInRow := 0;
+  AFoot := '';
+  LAsks := nil;
+  LAskRow := nil;
   FillChar(LMax, SizeOf(LMax), 0);
   LInRowKeys := TDictionary<string, Boolean>.Create;
   LHeld := TDictionary<string, Integer>.Create;
@@ -14930,8 +15400,25 @@ begin
       LRow.Rule := LINT_UNUSED_SYMBOL;
       LRow.Text := Format('%s (%s) - %s', [LS.Name,
         HeadOf(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym), UnusedWhy(LS)]);
+      LRow.But := UnusedBut(LS);
       LRow.Doubt := LS.Doubts <> nil;
       LRow.How := LS.How;
+      // Asked outside the index: a unit's declaration (a program's no other
+      // file can use).
+      LModel := LFirstA[LP.Key].Proj.ModelFile(LS.UnitId);
+      if SameText(ExtractFileExt(LModel), '.pas') then
+      begin
+        LAsk.UnitName := TPath.GetFileNameWithoutExtension(LModel);
+        LAsk.Word := StripGenerics(LS.Name);
+        if LastDelimiter('.', LAsk.Word) > 0 then
+          LAsk.Word := Copy(LAsk.Word, LastDelimiter('.', LAsk.Word) + 1,
+            MaxInt);
+        if LAsk.Word <> '' then
+        begin
+          LAsks := LAsks + [LAsk];
+          LAskRow := LAskRow + [ARows.Count];
+        end;
+      end;
       case LS.Kind of
         skType: LRow.Kind := 'type';
         skRoutine: LRow.Kind := 'routine';
@@ -14942,6 +15429,17 @@ begin
       end;
       ARows.Add(LRow);
     end;
+    // A row some file outside the index may use: a `but` more.
+    LSites := OutsideAskSites(AWs, LAsks, AFoot);
+    for var LI := 0 to High(LSites) do
+      if LSites[LI] <> nil then
+      begin
+        LRow := ARows[LAskRow[LI]];
+        LRow.But := LRow.But + IfThen(LRow.But <> '', '; ') +
+          OutsideBut(LSites[LI]);
+        LRow.Doubt := True;
+        ARows[LAskRow[LI]] := LRow;
+      end;
     for var LW := Low(TPasUnusedSkip) to High(TPasUnusedSkip) do
       if LMax[LW] > 0 then
         ASkipped := ASkipped + IfThen(ASkipped <> '', ', ') + Format('%d %s',
@@ -14969,9 +15467,9 @@ const
       + 'reads the form files',
     'a virtual, dynamic, abstract, override or message method - a call '
       + 'through its base may run it; `callers` follows those',
-    'a member of an interface - `callers` follows the calls through it',
-    'a method an interface of its class names - a call through the '
-      + 'interface may run it; `callers` follows those',
+    'a member of a dispinterface - a Variant call runs it by its DISPID',
+    'a method a library interface of its class names - library code may '
+      + 'call it through the interface; `callers` follows those',
     'an operator - expressions use it, not its name',
     'a class constructor or destructor - its unit runs it',
     'an attribute''s constructor - the attribute naming its class runs it',
@@ -14980,7 +15478,10 @@ const
     'declared in a unit that replaces a library unit of its name - the '
       + 'library .dcu files were compiled against the original',
     'the Register procedure of a unit a package contains - the IDE calls it '
-      + 'when it loads the package');
+      + 'when it loads the package',
+    'a parameter of a routine whose signature is fixed: code takes its '
+      + 'address (a procedural value, an event handler assigned, a property '
+      + 'accessor), or it is external, exported or assembler');
 
   MAX_LINT_SYMBOLS = 50;
 
@@ -15014,9 +15515,16 @@ var
   LKey: TPasSymbolKey;
   LChecks: TArray<TPasUnusedCheck>;
   LTargets: TArray<TTarget>;
-  LFile, LText, LWhere: string;
+  LFile, LText, LWhere, LFoot, LWhy: string;
   LCounts: array[0..3] of Integer;  // unused, used, not weighed, not found
   LSb: TStringBuilder;
+  LLine, LCut: Integer;
+  LCuts, LLines, LButs: TArray<string>;
+  LAsks: TArray<TOutsideAsk>;
+  LAskAt: TArray<Integer>;
+  LAsk: TOutsideAsk;
+  LSites: TArray<TArray<string>>;
+  LOutside: TArray<string>;
 begin
   LV := AArgs.GetValue('symbol');
   LFile := '';
@@ -15027,6 +15535,11 @@ begin
         + 'names are looked for in');
     LFile := ArgStr(AArgs, 'file');
   end;
+  // `file` + `line` + the name: a local or a parameter, as the refusal of a
+  // name no declaration matches says to address one.
+  LLine := ArgInt(AArgs, 'line', 0);
+  if (LLine > 0) and (LFile = '') then
+    raise EToolError.Create('`line` is a line of `file` - give the unit too');
   if ArgStr(AArgs, 'in') <> '' then
     raise EToolError.Create('with `symbol`, `in` does not narrow anything - '
       + 'give `file` for the unit the names are declared in');
@@ -15056,20 +15569,40 @@ begin
       raise EToolError.CreateFmt('%d names - at most %d in one call; for '
         + 'the whole of a unit give `file` alone', [LItems.Count,
         MAX_LINT_SYMBOLS]);
+    if (LLine > 0) and (LItems.Count > 1) then
+      raise EToolError.Create('with `line`, `symbol` is the one name declared '
+        + 'on it - several at once: a list of {"file","line","name"}');
     // Each name resolved - an overloaded routine's name to each overload.
+    LCuts := nil;
     for LOne in LItems do
     begin
       if (LFile <> '') and (LOne.GetValue('file') = nil) then
         LOne.AddPair('file', LFile);
+      if (LLine > 0) and (LOne.GetValue('line') = nil) then
+        LOne.AddPair('line', TJSONNumber.Create(LLine));
       LText := ArgStr(LOne, 'symbol');
       if LText = '' then
         LText := ArgStr(LOne, 'file') + ':' + ArgStr(LOne, 'line') + ' ' +
-          ArgStr(LOne, 'name');
+          ArgStr(LOne, 'name')
+      else if ArgInt(LOne, 'line', 0) > 0 then
+        LText := ArgStr(LOne, 'file') + ':' + ArgStr(LOne, 'line') + ' ' +
+          LText;
       try
         // A name with `file`: every declaration of it in that unit - each is
-        // asked about (three Reset of three classes, one verdict each).
+        // asked about (three Reset of three classes, one verdict each), or
+        // each local or parameter of that name.
         if NamedNotPlaced(LOne) then
-          LTargets := NamedInFile(AWs, LOne)
+          LTargets := NamedInFile(AWs, LOne, True)
+        else if (ArgStr(LOne, 'file') = '') and
+           (ArgStr(LOne, 'symbol') <> '') then
+        begin
+          LTargets := LintNamesakes(AWs, ArgStr(LOne, 'symbol'), ArgStr(LOne,
+            'kind'), LCut);
+          if LCut > 0 then
+            LCuts := LCuts + [Format('%s: %d more declarations of this name '
+              + 'not answered - qualify it (Unit.Type.Member) or give `file`',
+              [LText, LCut])];
+        end
         else
           LTargets := ResolveOneOrOverloads(AWs, LOne);
         for var LT in LTargets do
@@ -15181,11 +15714,39 @@ begin
       + 'weighed%s', [Plural(LAsked.Count, 'declaration'), LCounts[0],
       LCounts[1], LCounts[2], IfThen(LCounts[3] > 0, Format(', %d not '
       + 'resolved', [LCounts[3]]), '')]));
-    for LA1 in LAsked do
+    // An unused one some file outside the index may use: a `but` more.
+    LAsks := nil;
+    LAskAt := nil;
+    for var LI := 0 to LAsked.Count - 1 do
     begin
+      LA1 := LAsked[LI];
+      if (LA1.Error <> '') or (LA1.Verdict <> uvUnused) then
+        Continue;
+      LText := LA1.RowA.Proj.ModelFile(LA1.Row.UnitId);
+      if not SameText(ExtractFileExt(LText), '.pas') then
+        Continue;
+      LAsk.UnitName := TPath.GetFileNameWithoutExtension(LText);
+      LAsk.Word := StripGenerics(LA1.Row.Name);
+      if LastDelimiter('.', LAsk.Word) > 0 then
+        LAsk.Word := Copy(LAsk.Word, LastDelimiter('.', LAsk.Word) + 1, MaxInt);
+      LAsks := LAsks + [LAsk];
+      LAskAt := LAskAt + [LI];
+    end;
+    LSites := OutsideAskSites(AWs, LAsks, LFoot);
+    LOutside := nil;
+    SetLength(LOutside, LAsked.Count);
+    for var LI := 0 to High(LSites) do
+      LOutside[LAskAt[LI]] := OutsideBut(LSites[LI]);
+    LLines := nil;
+    LButs := nil;
+    for var LI := 0 to LAsked.Count - 1 do
+    begin
+      LA1 := LAsked[LI];
+      LWhy := '';
       if LA1.Error <> '' then
       begin
-        LSb.AppendLine(Format('%s: %s', [LA1.Text, LA1.Error]));
+        LLines := LLines + [Format('%s: %s', [LA1.Text, LA1.Error])];
+        LButs := LButs + [''];
         Continue;
       end;
       LWhere := Format('%s:%d:%d: ', [AWs.RelPath(LA1.Target.DeclFile),
@@ -15193,36 +15754,45 @@ begin
       case LA1.Verdict of
         uvUnused:
           begin
-            LText := Format('unused %s (%s) - %s', [LA1.Row.Name,
+            LText := Format('%s:%d:%d: unused %s (%s) - %s', [AWs.RelPath(
+              LA1.Row.FileName), LA1.Row.Line, LA1.Row.Col, LA1.Row.Name,
               HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId), LA1.Row.Sym),
               UnusedWhy(LA1.Row)]);
-            LSb.AppendLine(Format('%s:%d:%d: %s', [AWs.RelPath(
-              LA1.Row.FileName), LA1.Row.Line, LA1.Row.Col, LText]));
+            LWhy := UnusedBut(LA1.Row);
+            if LOutside[LI] <> '' then
+              LWhy := LWhy + IfThen(LWhy <> '', '; ') + LOutside[LI];
           end;
         uvUsed:
           // A routine may be used by a bare `inherited;` alone, which
           // `references` does not list and `callers` does.
-          LSb.AppendLine(Format('%sused %s (%s)%s - %s lists where', [LWhere,
+          LText := Format('%sused %s (%s)%s - %s lists where', [LWhere,
             LA1.Target.Name, LA1.Target.Head, IfThen(LA1.Unused > 0,
             Format(' - by %d of the %d configurations holding it', [LA1.Used,
             LA1.Held]), ''), IfThen(IsRoutineTarget(LA1.Target), '`callers`',
-            '`references`')]));
+            '`references`')]);
         uvSkipped:
-          LSb.AppendLine(Format('%snot weighed %s (%s) - %s', [LWhere,
-            LA1.Target.Name, LA1.Target.Head, cUnusedSkipWhy[LA1.Skip]]));
+          LText := Format('%snot weighed %s (%s) - %s', [LWhere,
+            LA1.Target.Name, LA1.Target.Head, cUnusedSkipWhy[LA1.Skip]]);
         uvNotCovered:
-          LSb.AppendLine(Format('%snot weighed %s (%s) - unused-symbol weighs '
-            + 'types, routines, unit and class variables and constants, '
-            + 'fields and properties; a local or a parameter is the '
-            + 'compiler''s hint; `references` answers for the rest', [LWhere,
-            LA1.Target.Name, LA1.Target.Head]));
+          LText := Format('%snot weighed %s (%s) - unused-symbol weighs '
+            + 'types, routines, variables and constants, fields, properties, '
+            + 'a routine''s parameters and locals - not an enum value or a '
+            + 'procedural type''s parameter; `references` answers for the '
+            + 'rest', [LWhere, LA1.Target.Name, LA1.Target.Head]);
       else
-        LSb.AppendLine(Format('%snot weighed %s (%s) - %s', [LWhere,
+        LText := Format('%snot weighed %s (%s) - %s', [LWhere,
           LA1.Target.Name, LA1.Target.Head, IfThen(LA1.Target.Own,
           'no analysis holds its unit', 'a library declaration: '
-          + 'unused-symbol weighs the group''s own units')]));
+          + 'unused-symbol weighs the group''s own units')]);
       end;
+      LLines := LLines + [LText];
+      LButs := LButs + [LWhy];
     end;
+    AppendButLines(LSb, LLines, LButs);
+    for var LC in LCuts do
+      LSb.AppendLine(LC);
+    if LFoot <> '' then
+      LSb.AppendLine(LFoot);
     Result := LSb.ToString.TrimRight;
   finally
     LSb.Free;
@@ -15506,7 +16076,8 @@ var
   LLimit, LShown, LDoubts, LN, LAsked: Integer;
   LUnused, LMove, LSymbols, LSure, LUnref, LApply: Boolean;
   LKinds: TArray<string>;
-  LSkipped, LApplied: string;
+  LSkipped, LApplied, LFoot: string;
+  LLines, LButs: TArray<string>;
   LInRow: Integer;
   LFiles, LOthers: TList<string>;
   LSeen: TDictionary<string, Boolean>;
@@ -15544,6 +16115,9 @@ begin
         + '`file` without `symbol`');
     Exit(LintSymbols(AWs, AArgs));
   end;
+  if ArgInt(AArgs, 'line', 0) > 0 then
+    raise EToolError.Create('`line` goes with `symbol` - the name declared on '
+      + 'it (a local, a parameter); a unit''s rows: `file` alone');
   // `kinds` alone asks unused-symbol: the uses rules have no kinds.
   if (LRules = nil) and (LKinds <> nil) then
     LRules := [LINT_UNUSED_SYMBOL];
@@ -15625,8 +16199,9 @@ begin
     EnsureLintEffects(AWs, LLints);
     LSkipped := '';
     LInRow := 0;
+    LFoot := '';
     if LSymbols then
-      LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped, LInRow);
+      LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped, LInRow, LFoot);
     if LUnref then
       LintUnreferenced(AWs, LFiles.ToArray, LRows);
     LArr := LRows.ToArray;
@@ -15709,14 +16284,18 @@ begin
           string.Join(', ', LKinds), '')]));
     end;
     LShown := 0;
+    LLines := nil;
+    LButs := nil;
     for var LRow in LArr do
     begin
       if LShown >= LLimit then
         Break;
-      LSb.AppendLine(Format('%s:%d:%d: %s %s', [AWs.RelPath(LRow.FilePath),
-        LRow.Line, LRow.Col, LRow.Rule, LRow.Text]));
+      LLines := LLines + [Format('%s:%d:%d: %s %s', [AWs.RelPath(
+        LRow.FilePath), LRow.Line, LRow.Col, LRow.Rule, LRow.Text])];
+      LButs := LButs + [LRow.But];
       Inc(LShown);
     end;
+    AppendButLines(LSb, LLines, LButs);
     if (LShown < Length(LArr)) and (LLimit > 0) then
       LSb.AppendLine(Format('... %d more (raise `limit`, or narrow with '
         + '`file`, `in`, `rules`, `kinds` or `sure`)', [Length(LArr) -
@@ -15730,6 +16309,8 @@ begin
       LSb.AppendLine(Format('(unused-symbol does not list %s of a type that '
         + 'is a row itself - each goes with its type)', [Plural(LInRow,
         'member')]));
+    if LFoot <> '' then
+      LSb.AppendLine(LFoot);
     if LApplied <> '' then
       LSb.AppendLine(LApplied);
     Result := LSb.ToString.TrimRight;
@@ -21518,12 +22099,14 @@ const
     + '(published members, virtual and interface methods, attributes, '
     + 'for-in), and a `but` names what the index cannot settle (a branch '
     + 'not compiled or a string spelling it, another overload in use, a '
-    + 'namesake in another unit). A declaration used only by rows (or by '
-    + 'itself) is a row too - used only by unused X, it goes with them - '
-    + 'and so is a field or variable only assigned, never read. `symbol` '
-    + 'asks it of the declarations named '
-    + 'alone, each answered unused, used, or not weighed and why (a virtual '
-    + 'method: `callers`). `sure` lists only the rows with no `but`, `kinds` '
+    + 'namesake in another unit, a file outside the index writing it); a '
+    + '`but` several rows share is said once and numbered. A declaration used '
+    + 'only by rows (or by itself) is a row too - used only by unused X, it '
+    + 'goes with it - and so is a field or variable only assigned, never '
+    + 'read. `symbol` asks it of the declarations named alone, each answered '
+    + 'unused, used, or not weighed and why (a virtual method: `callers`); a '
+    + 'name several own declarations have answers for each, with its place. '
+    + '`sure` lists only the rows with no `but`, `kinds` '
     + 'the unused-symbol rows of those kinds (routine, type, field...). '
     + 'unreferenced-units (asked by name): an own unit no program of the '
     + 'group reaches but through unused `uses` entries - it goes once they '
@@ -21545,9 +22128,12 @@ const
     + 'property (the header counts each); alone, asks unused-symbol"},'
     + '"symbol":{"description":"unused-symbol of these declarations alone: '
     + 'names (TFoo.Bar) joined by commas, or a list of names and '
-    + '{\"file\",\"line\",\"name\"}; an overloaded name is each overload. '
-    + 'With `file`, the names declared in that unit"},'
+    + '{\"file\",\"line\",\"name\"}; an overloaded name is each overload, a '
+    + 'name of several own declarations each of them. With `file`, the names '
+    + 'declared in that unit"},'
     + '"file":{"type":"string","description":"Only this unit - or these, joined by commas: one call checks several units for the cost of one, where calls made at once wait for each other"},'
+    + '"line":{"type":"integer","description":"With `file` and one name in '
+    + '`symbol`: the line declaring it - a local or a parameter"},'
     + '"in":{"type":"string","description":"Only the units whose path '
     + 'relative to the group contains this or matches it as a wildcard '
     + '(client\\*, *Form.pas)"},'
@@ -22495,8 +23081,12 @@ begin
     LTo := 'query'
   else
     Exit;
+  // lint's `symbol` with `file` + `line` is the name on that line, as `name`
+  // is elsewhere - the refusal of an unknown name says "`file` + `line` +
+  // `name`".
   for var LKey in [LTo, 'file', 'line', 'column', 'targets'] do
-    if AArgs.GetValue(LKey) <> nil then
+    if (AArgs.GetValue(LKey) <> nil) and ((AName <> 'lint') or
+       (LKey = LTo)) then
       Exit;
   LPair := AArgs.RemovePair('name');
   try

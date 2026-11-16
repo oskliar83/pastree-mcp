@@ -1137,8 +1137,8 @@ gap between the answers and the truth.
      `inherited;` is in `callers` alone), not weighed and why with the tool
      that follows it (a virtual method: `callers`; published: the form
      files), a library declaration or a local not weighed at all, a name
-     that resolves to nothing or to several declarations refused in its
-     place. Names joined by commas, or a list with `file` + `line` + `name`
+     that resolves to nothing refused in its place (several own
+     declarations: each answered, 0.58.0 below). Names joined by commas, or a list with `file` + `line` + `name`
      objects; an overloaded name is each overload; with `file`, every
      declaration of the name in that unit. Only the targets' units are
      collected, restricted to the targets and the overloads beside each
@@ -1160,7 +1160,8 @@ gap between the answers and the truth.
      declaration every use of which sits in rows - their bodies, their
      declarations (a property's `read GetX`, a field's type), its own body -
      is a row, "used only by unused X, Y - it goes with them" ("only its own
-     body uses it" for recursion); a field or a unit or class variable whose
+     body uses it" for recursion; 0.58.0: "it goes with it" for one user,
+     "used only by itself and by unused X" for recursion beside a caller); a field or a unit or class variable whose
      every other use is the target of a plain `:=` is a row, "only assigned
      (where), never read" - not a record's field (the record is read whole)
      nor an `absolute` one. Both are decided together to a fixed point (two
@@ -1200,6 +1201,50 @@ gap between the answers and the truth.
      the one that sees its uses says it - a record's method called only by
      dead methods of the server, which the client's analysis does not
      compile, read "nothing in the group uses it".
+
+     The answers' wording (0.58.0), from replaying the dead-code decisions
+     of past sessions on the client group, pastree-lsp and PasTree against
+     0.57.0 - every verdict right, but calls and tokens spent around them.
+     A bare name several own declarations have is answered for each, with
+     its place (up to 20, the rest counted with how to narrow): pastree-lsp's
+     18 private LogDiagnostic procedures were a refusal and a second call,
+     now 18 verdicts in one (569 tokens); a library namesake goes when an
+     own unit has one (`OffsetOf` beside PasTree's
+     TPasTokenStream.OffsetOf). `file` + `line` + the name (`symbol`, or
+     `name`) addresses a local or a parameter, as the refusal of an unknown
+     name says to, and `file` + `symbol` finds one in that unit's bodies -
+     both weighed by PasTree 0.204.0's CheckUnusedSymbols (unused when
+     never read, only written, or only passed on to another such
+     parameter; a parameter whose signature something else holds - a
+     routine whose address is taken, an external, exported or assembler
+     one - not weighed and why): before, `line` was refused and
+     `file` + `symbol` said "no declaration". Interface members are weighed
+     too since PasTree 0.204.0 - one nobody names is a row, its accessors
+     and implementing methods rows made by it; a dispinterface's members
+     and a library interface's implementations are not weighed, and a
+     `but` marks an interface something outside the index may call
+     through (IDispatch, IInvokable or `$M+`, COM, a GUID with no
+     implementer in the analysis). The
+     same `symbol` + `file` + `line` in every tool is the name on that line
+     (ResolvePosition): `references` of a parameter answered for the
+     routine declared on its line. A `but` several listed rows share is
+     said once above them, numbered, each row ending in `but [N]`: on the
+     client group's busiest unit, 100 rows took 2,804 tokens (5,709 before),
+     all 154 4,457 (7,545); the whole group's 5,754 rows about 225,000
+     (about 287,000 with every `but` written out). A declaration a Pascal
+     file outside the index uses - the file names its unit and writes the
+     name in code, qualified or not; a word match - has a `but` naming it,
+     and the answer the `also` entry that indexes it, as `references` and
+     `callers` say: a client routine called only by an orphan
+     unit, and PasTree's TPasProject, used by tools/PasTreeParse.dpr, were
+     rows with no `but`. The files' words are kept by stamp and the rows
+     looked up by word: 0.6 s of a whole-group run's 7.1 s (46.6 s cold),
+     so it stays there too; light mode's closure is built once per session
+     for it, as for `references` (3.6 s on the client group). A name
+     written only in comments or string literals of the own units says so,
+     with where (a routine a client plan named). "It goes with
+     it" for one user; "used only by itself and by unused X" for recursion
+     beside a caller.
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.
