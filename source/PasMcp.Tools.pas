@@ -95,6 +95,7 @@ uses
   PasTree.SymbolEdit,
   PasTree.Parser,
   PasTree.Sema.Workspace,
+  PasTree.Sema.ImportGraph,
   PasTree.Dfm,
   PasTree.Sema.Dfm,
   PasTree.Platforms,
@@ -13241,11 +13242,290 @@ begin
   end;
 end;
 
+{ unit_deps `root`: through which units a program takes a unit in (PasTree's
+  TPasImportGraph, the analysis' `uses` graph once its closure is loaded -
+  a light analysis loads the units nobody loaded, as a full one has them).
+  Every path root -> ... -> unit is too many to list, so the answer is what
+  an agent acts on: one shortest chain with each entry's file:line, the
+  entries every path takes (removing one alone drops the unit from the
+  program), the units every path goes through, then the entries into each
+  unit on the paths - the tree grown back from the unit, a unit per row -
+  and the other programs of the group taking it in. }
+
+// The member `root` names: its name, its project file or its main source.
+function RootMember(AWs: TMcpWorkspace; const ARoot: string): Integer;
+var
+  LFull: string;
+begin
+  LFull := AWs.FullPath(ARoot);
+  for var LI := 0 to High(AWs.Members) do
+    if SameText(AWs.Members[LI].Name, ARoot) or
+       SameText(TPath.GetFileNameWithoutExtension(AWs.Members[LI].ProjectFile),
+         ARoot) or SameText(AWs.Members[LI].ProjectFile, LFull) or
+       SameText(AWs.Members[LI].MainSource, LFull) then
+      Exit(LI);
+  Result := -1;
+end;
+
+// The analysis' import graph (WS.ImportGraph meets its closure first); the
+// caller frees it. A query that changed the analysis raises, as every Q*.
+function QImportGraph(AWs: TMcpWorkspace; AA: TMcpAnalysis): TPasImportGraph;
+var
+  LSW: TStopwatch;
+begin
+  LSW := TStopwatch.StartNew;
+  Result := AA.WS.ImportGraph;
+  try
+    AWs.QueryDone(AA);
+  except
+    Result.Free;
+    raise;
+  end;
+  LogStep(Format('import graph, analysis %d: %d units, %d edges', [AA.Index,
+    Result.UnitCount, Result.EdgeCount]), LSW);
+end;
+
+// How AOwn differs from ABase, case aside: 'add X, Y; lack Z', '' for none;
+// at most four names of each side, the rest counted.
+function DefinesDiffText(const AOwn, ABase: TArray<string>): string;
+
+  function Named(const ANames: TArray<string>): string;
+  begin
+    Result := string.Join(', ', Copy(ANames, 0, 4));
+    if Length(ANames) > 4 then
+      Result := Result + Format(' and %d more', [Length(ANames) - 4]);
+  end;
+
+var
+  LAdd, LLack: TArray<string>;
+begin
+  LAdd := nil;
+  LLack := nil;
+  for var LD in AOwn do
+    if not MatchText(LD, ABase) and not MatchText(LD, LAdd) then
+      LAdd := LAdd + [LD];
+  for var LD in ABase do
+    if not MatchText(LD, AOwn) and not MatchText(LD, LLack) then
+      LLack := LLack + [LD];
+  Result := '';
+  if LAdd <> nil then
+    Result := 'add ' + Named(LAdd);
+  if LLack <> nil then
+    Result := Result + IfThen(Result <> '', '; ', '') + 'lack ' + Named(LLack);
+end;
+
+// Where edge AEdge is written - 'file:line', or its importer's name when the
+// entry is not found any more (an edit since the graph was taken).
+function ImportEdgeSite(AWs: TMcpWorkspace; AA: TMcpAnalysis;
+  AG: TPasImportGraph; AEdge: Integer): string;
+var
+  LPath: string;
+  LLine, LCol: Integer;
+begin
+  if AG.EdgeSite(AA.Proj, AEdge, LPath, LLine, LCol) then
+    Result := Format('%s:%d', [AWs.RelPath(LPath), LLine])
+  else
+    Result := AG.Units[AG.Edges[AEdge].FromUnit].Name;
+end;
+
+function ImportPathsText(AWs: TMcpWorkspace; const AFile, ARoot: string;
+  ALimit: Integer): string;
+var
+  LMi, LRoot, LTarget, LT, LShown, LTotal, LU, LN: Integer;
+  LA: TMcpAnalysis;
+  LGraphs: TObjectList<TPasImportGraph>;
+  LG, LH: TPasImportGraph;
+  LP: TPasImportPaths;
+  LSb: TStringBuilder;
+  LTargetName, LRootName, LRow: string;
+  LOthers, LNames: TList<string>;
+  LChain, LSole, LBott, LIn: TArray<Integer>;
+  LQueue: TList<Integer>;
+  LSeen: TArray<Boolean>;
+  LE: TPasImportEdge;
+begin
+  LMi := RootMember(AWs, ARoot);
+  if LMi < 0 then
+  begin
+    LNames := TList<string>.Create;
+    try
+      for var LM in AWs.Members do
+        LNames.Add(LM.Name);
+      raise EToolError.CreateFmt('`root` %s names no program of the group - '
+        + 'its programs: %s', [ARoot, string.Join(', ', LNames.ToArray)]);
+    finally
+      LNames.Free;
+    end;
+  end;
+  if AWs.Members[LMi].Analysis < 0 then
+    raise EToolError.CreateFmt('%s was not analyzed: %s', [AWs.Members[LMi].Name,
+      AWs.Members[LMi].Error]);
+  LA := AWs.Analyses[AWs.Members[LMi].Analysis];
+  LTargetName := UnitNameOfFile(AFile);
+  LP := nil;
+  LGraphs := TObjectList<TPasImportGraph>.Create;
+  LOthers := TList<string>.Create;
+  LQueue := TList<Integer>.Create;
+  LSb := TStringBuilder.Create;
+  try
+    LG := QImportGraph(AWs, LA);
+    LGraphs.Add(LG);
+    LRoot := -1;
+    if AWs.Members[LMi].MainSource <> '' then
+      LRoot := LG.UnitOf(AWs.Members[LMi].MainSource);
+    if LRoot < 0 then
+      LRoot := LG.UnitOf(AWs.Members[LMi].Name);
+    if (LRoot < 0) or not LG.Units[LRoot].IsRoot then
+      raise EToolError.CreateFmt('the main source of %s is not in its analysis',
+        [AWs.Members[LMi].Name]);
+    LRootName := LG.Units[LRoot].Name;
+    LTarget := LG.UnitOf(AFile);
+    // A member sharing an analysis built with another member's defines: its
+    // own may take other {$IFDEF} branches of `uses`. On the client group
+    // COMServer, analyzed with the main program's, lost two entries every
+    // path takes and four units every path goes through to cxGrid.
+    LRow := DefinesDiffText(AWs.Members[LMi].Defines,
+      AWs.Members[LA.Members[0]].Defines);
+    if (LA.Members[0] <> LMi) and (LRow <> '') then
+      LSb.AppendLine(Format('(%s is analyzed with %s''s defines - its own %s: '
+        + 'a `uses` entry under those {$IFDEF}s may go the other way; '
+        + '`--groups strict` analyzes it with its own)', [LRootName,
+        AWs.Members[LA.Members[0]].Name, LRow]));
+    // The other programs of the group taking the unit in - of every analysis
+    // holding it (another configuration may list it where this one does
+    // not).
+    for var LB in AWs.Analyses do
+    begin
+      if LB.Proj = nil then
+        Continue;
+      if LB = LA then
+        LH := LG
+      else
+      begin
+        if LB.Nav.ModelIdOf(AFile) < 0 then
+          Continue;
+        LH := QImportGraph(AWs, LB);
+        LGraphs.Add(LH);
+      end;
+      LT := LH.UnitOf(AFile);
+      if LT >= 0 then
+        for var LR in LH.RootsReaching(LT) do
+          if not SameText(LH.Units[LR].Name, LRootName) and
+             (LOthers.IndexOf(LH.Units[LR].Name) < 0) then
+            LOthers.Add(LH.Units[LR].Name);
+    end;
+    if LTarget = LRoot then
+      LSb.AppendLine(Format('%s is the program itself', [LRootName]))
+    else
+    begin
+      if LTarget >= 0 then
+        LP := TPasImportPaths.Create(LG, LRoot, LTarget);
+      if (LP = nil) or not LP.Reached then
+        LSb.AppendLine(Format('%s does not take %s in', [LRootName,
+          LTargetName]))
+      else
+      begin
+        LChain := LP.ShortestChain;
+        LSole := LP.SoleEdges;
+        LBott := LP.Bottlenecks;
+        LIn := LP.Importers(LTarget);
+        LSb.AppendLine(Format('%s takes %s in at %s: %s on its paths, %d %s '
+          + 'into it', [LRootName, LTargetName, Plural(Length(LChain),
+          'uses step'), Plural(LP.OnPathCount, 'unit'), Length(LIn),
+          IfThen(Length(LIn) = 1, 'entry', 'entries')]));
+        if Length(LSole) > 0 then
+          LSb.AppendLine(Format('the shortest chain (* every path takes the '
+            + 'entry: removing it alone drops %s from %s):', [LTargetName,
+            LRootName]))
+        else
+          LSb.AppendLine('the shortest chain:');
+        for var LEdge in LChain do
+        begin
+          LE := LG.Edges[LEdge];
+          LSb.AppendLine(Format('%s %s  %s%s', [IfThen(LP.IsSole(LEdge), '*',
+            ' '), ImportEdgeSite(AWs, LA, LG, LEdge), LE.Written,
+            IfThen(LE.InImpl, '  (implementation)', '')]));
+        end;
+        if Length(LSole) = 0 then
+          LSb.AppendLine(Format('no entry every path takes: removing any one '
+            + 'alone leaves %s in %s', [LTargetName, LRootName]));
+        if Length(LBott) > 0 then
+        begin
+          LRow := '';
+          for var LB in LBott do
+            LRow := LRow + IfThen(LRow <> '', ', ', '') + LG.Units[LB].Name;
+          LSb.AppendLine('every path goes through: ' + LRow);
+        end;
+        // More than one path: the entries into each unit on them, grown back
+        // from the unit a level at a time (the chain says it all otherwise).
+        if Length(LSole) < Length(LChain) then
+        begin
+          LSb.AppendLine(Format('the entries into each unit on the paths, %s '
+            + 'first - (n): the importer''s steps from %s:', [LTargetName,
+            LRootName]));
+          SetLength(LSeen, LG.UnitCount);
+          LSeen[LTarget] := True;
+          LQueue.Add(LTarget);
+          LTotal := LP.OnPathCount - 1;
+          LShown := 0;
+          LU := 0;
+          while (LU < LQueue.Count) and (LShown < ALimit) do
+          begin
+            LIn := LP.Importers(LQueue[LU]);
+            LRow := '';
+            LN := 0;
+            for var LEdge in LIn do
+            begin
+              LE := LG.Edges[LEdge];
+              if not LSeen[LE.FromUnit] and (LE.FromUnit <> LRoot) then
+              begin
+                LSeen[LE.FromUnit] := True;
+                LQueue.Add(LE.FromUnit);
+              end;
+              Inc(LN);
+              if LN > 8 then
+                Continue;
+              LRow := LRow + IfThen(LRow <> '', ', ', '') + Format('%s (%d%s)',
+                [ImportEdgeSite(AWs, LA, LG, LEdge), LP.Depth(LE.FromUnit),
+                IfThen(LE.InImpl, ', implementation', '')]);
+            end;
+            if LN > 8 then
+              LRow := LRow + Format(' and %d more', [LN - 8]);
+            LSb.AppendLine(Format('  %s <- %s', [LG.Units[LQueue[LU]].Name,
+              LRow]));
+            Inc(LShown);
+            Inc(LU);
+          end;
+          if LTotal > LShown then
+            LSb.AppendLine(MoreRows(LTotal - LShown, LShown, 'raise `limit`',
+              'more units'));
+        end;
+      end;
+    end;
+    if LOthers.Count > 0 then
+    begin
+      LOthers.Sort;
+      LSb.AppendLine(Format('%s %s', [IfThen((LP <> nil) and LP.Reached,
+        'also taken in by:', 'taken in by:'), string.Join(', ',
+        LOthers.ToArray)]))
+    end
+    else if (LTarget <> LRoot) and ((LP = nil) or not LP.Reached) then
+      LSb.AppendLine('no other program of the group takes it in');
+    Result := LSb.ToString.TrimRight;
+  finally
+    LSb.Free;
+    LQueue.Free;
+    LOthers.Free;
+    LP.Free;
+    LGraphs.Free;
+  end;
+end;
+
 function ToolUnitDeps(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
 var
   LA: TMcpAnalysis;
   LMid, LImplLine, LLine, LCol, LTMid: Integer;
-  LFile, LDir, LSiteFile: string;
+  LFile, LDir, LSiteFile, LPaths: string;
   LM: TPasSemaModel;
   LSb: TStringBuilder;
   LSet: THitSet;
@@ -13292,6 +13572,15 @@ begin
     raise EToolError.Create('that unit is not part of any analyzed project');
   end;
   LFile := LA.Proj.ModelFile(LMid);
+  // `root`: the paths alone, unless `direction` asks for the lists too.
+  LPaths := '';
+  if ArgStr(AArgs, 'root') <> '' then
+  begin
+    LPaths := ImportPathsText(AWs, LFile, ArgStr(AArgs, 'root'),
+      ArgInt(AArgs, 'limit', 10));
+    if ArgStr(AArgs, 'direction') = '' then
+      Exit(LPaths);
+  end;
   // A library unit read interface-only: its implementation `uses` loaded,
   // as a full analysis loads them (one file's demand).
   if ((LDir = 'uses') or (LDir = 'both')) and LA.Proj.IsLight(LMid) then
@@ -13300,6 +13589,8 @@ begin
   LSb := TStringBuilder.Create;
   LSet := THitSet.Create(AWs);
   try
+    if LPaths <> '' then
+      LSb.AppendLine(LPaths);
     if (LDir = 'uses') or (LDir = 'both') then
     begin
       // Which section each item sits in: before or after `implementation`.
@@ -22425,11 +22716,22 @@ const
     + '"limit":{"type":"integer","description":"Max rows (default 60)"}}}},' +
 
     '{"name":"unit_deps","description":"Which units a unit uses (resolved to '
-    + 'files, implementation-section ones marked) and which units use it.",'
+    + 'files, implementation-section ones marked) and which units use it. '
+    + 'With `root` (a program of the group): through which units that program '
+    + 'takes the unit in - why it is linked - a shortest chain of `uses` '
+    + 'entries with file:line, the entries every path takes (removing one '
+    + 'alone drops the unit from the program), the units every path goes '
+    + 'through, the entries into each unit on the paths, and the other '
+    + 'programs taking it in.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"unit":{"type":"string","description":"Unit name"},'
     + '"file":{"type":"string","description":"Or the unit''s file"},'
-    + '"direction":{"type":"string","enum":["uses","used_by","both"]}}}},' +
+    + '"direction":{"type":"string","enum":["uses","used_by","both"],'
+    + '"description":"Default both; with `root`, the lists only when given"},'
+    + '"root":{"type":"string","description":"A program of the group (its '
+    + 'name, .dproj or .dpr): the paths from it to the unit"},'
+    + '"limit":{"type":"integer","description":"With `root`: max units in '
+    + 'the entries'' tree (default 10)"}}}},' +
 
     '{"name":"defines","description":"Conditional compilation, as the '
     + 'analyzed configuration compiles it - before editing code between '
@@ -22651,7 +22953,8 @@ begin
     + 'creation questions, `outline` shows a unit''s structure with line '
     + 'numbers, `form` a form''s components and which method each event '
     + 'runs (instead of reading the .dfm and its ancestors''), `unit_deps` '
-    + 'its uses graph, `diagnostics` checks name '
+    + 'its uses graph (with `root`: through which units a program takes it '
+    + 'in, and which entry removed drops it), `diagnostics` checks name '
     + 'resolution after edits, `rename_plan` the edits of a rename - code '
     + 'and form lines - to apply yourself, `change_plan` what a change of a '
     + 'routine''s parameters or result must touch - its overrides, the '

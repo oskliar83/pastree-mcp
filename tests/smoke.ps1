@@ -185,6 +185,20 @@ Check 'outline owner' (Block $b 'outline {"file":"AppB/uFallback.pas","owner":"T
 Check 'outline owner prefix' (Block $b 'outline {"file":"AppB/uFallback.pas","owner":"TAudit"}') @('declares no type `TAudit`') @('field akBeta')
 # A unit per used_by row: AppB.dpr's `uFallback.FallbackName` is no second unit.
 Check 'unit_deps used_by per unit' (Block $b 'unit_deps {"unit":"uFallback","direction":"used_by"}') @("uFallback is used by 1 units:`n  AppB\AppB.dpr:10") @('AppB.dpr:15')
+# `root`: through which units a program takes a unit in (PasTree's import graph).
+Check 'unit_deps root sole' (Block $b 'unit_deps {"unit":"uLintReg","root":"AppB"}') @('AppB takes uLintReg in at 3 uses steps: 5 units on its paths, 2 entries into it', "* AppB\AppB.dpr:10  uLint`n  AppB\uLint.pas:14  uLintBase`n  AppB\uLintBase.pas:10  uLintReg", 'every path goes through: uLint', '  uLintReg <- AppB\uLintAlias.pas:10 (2), AppB\uLintBase.pas:10 (2)', '  uLintAlias <- AppB\uLint.pas:29 (1, implementation)') @('taken in by')
+# AppB shares AppA's analysis and its defines: said, with what differs.
+Check 'unit_deps root defines' (Block $b 'unit_deps {"unit":"uLintReg","root":"AppB"}') @("(AppB is analyzed with AppA's defines - its own lack FIXTURE_A: a ``uses`` entry under those {`$IFDEF}s may go the other way; ``--groups strict`` analyzes it with its own)")
+Check 'unit_deps root defines first member' (Block $b 'unit_deps {"unit":"uFlags","root":"AppA","direction":"used_by"}') @('AppA takes uFlags in') @('is analyzed with')
+Check 'unit_deps root no sole' (Block $b 'unit_deps {"unit":"uRcD","root":"AppB"}') @('no entry every path takes: removing any one alone leaves uRcD in AppB', '  uRcD <- AppB\uRcE.pas:10 (1, implementation), AppB\uRcF.pas:10 (1, implementation)') @('every path goes through', '* ', 'taken in by')
+Check 'unit_deps root limit' (Block $b 'unit_deps {"unit":"uRcA","root":"AppB","limit":2}') @('12 units on its paths, 7 entries into it', '  uRcB <- AppB\AppB.dpr:10 (0)', '... 9 more units (raise `limit`)')
+# Not reached: who does. AppF, walked after AppB, inherited its reach before
+# PasTree 0.210.1.
+Check 'unit_deps root not reached' (Block $b 'unit_deps {"unit":"uColors","root":"AppA"}') @("AppA does not take uColors in`ntaken in by: AppB") @('AppF')
+Check 'unit_deps root others' (Block $b 'unit_deps {"unit":"uShapes","root":"AppB"}') @('AppB takes uShapes in at 1 uses step', '  uShapes <- AppB\AppB.dpr:8 (0), AppB\uAppB.pas:8 (1)', 'also taken in by: AppA') @('AppF')
+Check 'unit_deps root itself' (Block $b 'unit_deps {"unit":"AppF","root":"AppF"}') @('AppF is the program itself') @('taken in by')
+Check 'unit_deps root unknown' (Block $b 'unit_deps {"unit":"uLintReg","root":"Nope"}') @('`root` Nope names no program of the group - its programs: AppA, AppB, AppF')
+Check 'unit_deps root and direction' (Block $b 'unit_deps {"unit":"uFlags","root":"AppA","direction":"used_by"}') @('* AppA\AppA.dpr:6  uFlags', 'also taken in by: AppB', 'uFlags is used by 3 units:')
 Check 'find limit cap' (Block $b 'find {"query":"T*","limit":5000}') @('`limit` is at most 500)') @('raise `limit`')
 Check 'references count mode' (Block $b 'references {"symbol":"TAuditBox","mode":"count"}') @('4 references in 1 files', '(limit 0: 4 not listed)') @('raise `limit`')
 Check 'references enum value' (Block $b 'references {"symbol":"TTint.tnRed"}') @('TTint.tnRed (enum value) declared at AppB\uColors.pas:11 - 1 references in 1 files', "  TintName`n    25  tnRed: Result := 'red';")
@@ -942,6 +956,9 @@ Write-Host '--- CLI, strict policy'
 $b = Run-Cli @('--groups', 'strict')
 Check 'strict status' (Block $b 'status') @('analysis 0:', 'analysis 1:')
 Check 'strict references unit' (Block $b 'references {"symbol":"uShapes"}') @('3 references in 3 files')
+# Each program its own analysis: the others are found in theirs.
+Check 'strict unit_deps root' (Block $b 'unit_deps {"unit":"uShapes","root":"AppA"}') @('AppA takes uShapes in at 2 uses steps', 'also taken in by: AppB') @('AppF')
+Check 'strict unit_deps root own defines' (Block $b 'unit_deps {"unit":"uLintReg","root":"AppB"}') @('AppB takes uLintReg in') @('is analyzed with')
 # The shared unit is in both analyses: its edits are counted once.
 Check 'strict rename_plan' (Block $b 'rename_plan {"symbol":"TCircle","new_name":"TRound"') @('to TRound - 6 edits in 3 files')
 Check 'strict rename_plan unit' (Block $b 'rename_plan {"symbol":"uShapes"') @('to uShapesNew - 5 edits in 4 files')

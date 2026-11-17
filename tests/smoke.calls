@@ -414,6 +414,15 @@ outline {"file":"AppB/uFallback.pas","owner":"NoSuchType"}
 outline {"file":"AppB/uFallback.pas","owner":"TAuditBox"}
 outline {"file":"AppB/uFallback.pas","owner":"TAudit"}
 unit_deps {"unit":"uFallback","direction":"used_by"}
+unit_deps {"unit":"uLintReg","root":"AppB"}
+unit_deps {"unit":"uRcD","root":"AppB"}
+unit_deps {"unit":"uRcA","root":"AppB","limit":2}
+unit_deps {"unit":"uColors","root":"AppA"}
+unit_deps {"unit":"uShapes","root":"AppB"}
+unit_deps {"unit":"uShapes","root":"AppA"}
+unit_deps {"unit":"AppF","root":"AppF"}
+unit_deps {"unit":"uLintReg","root":"Nope"}
+unit_deps {"unit":"uFlags","root":"AppA","direction":"used_by"}
 find {"query":"T*","limit":5000}
 references {"symbol":"TAuditBox","mode":"count"}
 compile {"code":"uses uShapes;\nWriteln(TCircle.ClassName);\nWriteln(NoSuchName);","member":"AppB"}
