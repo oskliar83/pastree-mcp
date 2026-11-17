@@ -16,7 +16,9 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.62.0';
+  PasTreeMcpVersion = '0.63.0';
+  // 0.209.0: PasTree.SymbolEdit (lint's `apply` of unused-symbol rows) and
+  // TPasUnusedSymbol.WriteSites - a compile error without them.
   // 0.207.0: a library's exported declaration is used, not a row (usExported,
   // a member of TPasUnusedSkip the skip texts below must match; a package's
   // units exported by default, TPasUnusedLibrary.PackagesInternal) - an
@@ -79,7 +81,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.207.0';
+  cMinPasTreeVersion = '0.209.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.

@@ -92,6 +92,8 @@ uses
   PasTree.Sema.Nav,
   PasTree.Sema.Lint,
   PasTree.UsesEdit,
+  PasTree.SymbolEdit,
+  PasTree.Parser,
   PasTree.Sema.Workspace,
   PasTree.Dfm,
   PasTree.Sema.Dfm,
@@ -13447,6 +13449,8 @@ type
     // unused-uses: the unused declarations the entry is needed only by -
     // it goes with them, never alone (`apply` leaves it). nil otherwise.
     By: TArray<string>;
+    // unused-symbol: PasTree's row, for `apply` (PasTree.SymbolEdit).
+    Sym: TPasUnusedSymbol;
   end;
 
   // What lint reads of one analysis more than once: the interface names of
@@ -15597,6 +15601,7 @@ begin
       LRow.But := UnusedBut(LS);
       LRow.Doubt := LS.Doubts <> nil;
       LRow.How := LS.How;
+      LRow.Sym := LS;
       // Asked outside the index: a unit's declaration (a program's no other
       // file can use).
       LModel := LFirstA[LP.Key].Proj.ModelFile(LS.UnitId);
@@ -16167,9 +16172,125 @@ end;
   go with without one is refused, and said so). Rows are weighed together
   (LintTogether), so what is written is safe to remove at once. Each file
   is rewritten from the tree of an analysis whose text is the file's on
-  disk, in its encoding and line breaks (`format`'s WriteLikeFile). }
+  disk, in its encoding and line breaks (`format`'s WriteLikeFile).
+  Then the unused-symbol rows with no `but` (0.63.0): PasTree.SymbolEdit,
+  the edits pastree-lsp's Remove makes - each declaration with what goes
+  with it (its body, its forward, the rows using it, an only-assigned
+  one's assignments), on the files as they are after the `uses` edits,
+  parsed with the defines of the analysis holding them; a row that cannot
+  go safely is kept and said why. }
 procedure WriteLikeFile(const APath: string; const AOld: TBytes;
   const AText: string; out AHow: string); forward;
+
+function LintApplySymbols(AWs: TMcpWorkspace; const ARows: TArray<TLintRow>;
+  out AFiles: Integer; out ANotes: TArray<string>): Integer;
+var
+  LRows: TArray<TPasUnusedSymbol>;
+  LAsk, LTaken: TArray<Integer>;
+  LRefused: TArray<TPasSymbolRefusal>;
+  LEdits: TArray<TPasSymbolRemoval>;
+  LS: TPasUnusedSymbol;
+  LPre: TObjectDictionary<Integer, TPasPreprocessor>;
+  LSM: TPasSourceManager;
+  LFile, LHow, LText: string;
+  LBytes: TBytes;
+  LFirst, LLast: Integer;
+  LTextEdits: TPasTextEdits;
+  LEdit: TPasTextEdit;
+begin
+  Result := 0;
+  AFiles := 0;
+  ANotes := nil;
+  LRows := nil;
+  LAsk := nil;
+  for var LRow in ARows do
+    if LRow.Rule = LINT_UNUSED_SYMBOL then
+    begin
+      // A `but` is a doubt PasTree must see: what goes with such a row
+      // stays with it.
+      LS := LRow.Sym;
+      if LRow.But <> '' then
+        LS.Doubts := [LRow.But]
+      else
+      begin
+        LS.Doubts := nil;
+        LAsk := LAsk + [Length(LRows)];
+      end;
+      LRows := LRows + [LS];
+    end;
+  if LAsk = nil then
+    Exit;
+  LSM := TPasSourceManager.Create(nil);
+  LPre := TObjectDictionary<Integer, TPasPreprocessor>.Create([doOwnsValues]);
+  try
+    LEdits := UnusedSymbolsRemoval(LRows, LAsk,
+      function(const AFileName: string; out AText: string): Boolean
+      var
+        LH: string;
+      begin
+        AText := TPasSourceManager.DecodeBytes(TFile.ReadAllBytes(AFileName),
+          LH);
+        // A file that would not be written back as it was is not read.
+        Result := LH = '';
+      end,
+      function(const AFileName, AText: string; out ATree: TPasTree;
+        out AErrors: Integer): Boolean
+      var
+        LP: TPasPreprocessor;
+        LDiags: TArray<TPasParseDiag>;
+        LProject, LPlatform: TArray<string>;
+      begin
+        // The defines of the first analysis holding the file.
+        Result := False;
+        for var LA in AWs.Analyses do
+          if (LA.Proj <> nil) and (LA.Proj.ModelIdOf(AFileName) >= 0) then
+          begin
+            if not LPre.TryGetValue(LA.Index, LP) then
+            begin
+              LA.Proj.BaseDefineNames(LProject, LPlatform);
+              LP := TPasPreprocessor.Create(LSM, TPasDefines.Create(LProject +
+                LPlatform));
+              LPre.Add(LA.Index, LP);
+            end;
+            ATree := TPasParser.ParseFile(LP.ProcessText(AFileName, AText),
+              LDiags);
+            AErrors := Length(LDiags);
+            Exit(True);
+          end;
+      end, LTaken, LRefused);
+  finally
+    LPre.Free;
+    LSM.Free;
+  end;
+  for var LR in LRefused do
+    ANotes := ANotes + [Format('%s:%d %s: %s - kept', [AWs.RelPath(
+      LRows[LR.Row].FileName), LRows[LR.Row].Line, LRows[LR.Row].Name,
+      LR.Reason])];
+  // The edits by file, in order: each file read again and written once.
+  LFirst := 0;
+  while LFirst <= High(LEdits) do
+  begin
+    LLast := LFirst;
+    while (LLast < High(LEdits)) and SameText(LEdits[LLast + 1].FileName,
+      LEdits[LFirst].FileName) do
+      Inc(LLast);
+    LFile := LEdits[LFirst].FileName;
+    LBytes := TFile.ReadAllBytes(LFile);
+    LText := TPasSourceManager.DecodeBytes(LBytes, LHow);
+    LTextEdits := nil;
+    for var LI := LFirst to LLast do
+    begin
+      LEdit.Start := LEdits[LI].Edit.Start;
+      LEdit.Len := LEdits[LI].Edit.Len;
+      LEdit.Text := '';
+      LTextEdits := LTextEdits + [LEdit];
+    end;
+    WriteLikeFile(LFile, LBytes, PasApplyEdits(LText, LTextEdits), LHow);
+    Inc(AFiles);
+    LFirst := LLast + 1;
+  end;
+  Result := Length(LTaken);
+end;
 
 function LintApply(AWs: TMcpWorkspace; const ARows: TArray<TLintRow>): string;
 var
@@ -16207,11 +16328,8 @@ begin
     LKept := '';
     if LAfter > 0 then
       LKept := Format('%s needed only by unused declarations left - each '
-        + 'goes with the declarations it names, removed by hand', [Plural(
-        LAfter, 'row')]);
-    if LByFile.Count = 0 then
-      Exit('apply: no unused-uses row without a "but" - nothing written' +
-        IfThen(LKept <> '', '; ' + LKept));
+        + 'goes with the declarations it names: call again once they are '
+        + 'removed', [Plural(LAfter, 'row')]);
     LKeys := LByFile.Keys.ToArray;
     TArray.Sort<string>(LKeys, TStringComparer.Ordinal);
     LRemoved := 0;
@@ -16276,9 +16394,21 @@ begin
       Inc(LFiles);
       Inc(LRemoved, Length(LNames) - Length(LRefused) - Length(LMissing));
     end;
-    Result := Format('apply: %d `uses` %s removed from %s - the next call '
-      + 'reads them again; run `compile`', [LRemoved, IfThen(LRemoved = 1,
-      'entry', 'entries'), Plural(LFiles, 'file')]);
+    // The declarations, on the files as the `uses` edits left them.
+    var LSymFiles: Integer;
+    var LSymNotes: TArray<string>;
+    var LSymRemoved := LintApplySymbols(AWs, ARows, LSymFiles, LSymNotes);
+    LNotes := LNotes + LSymNotes;
+    if (LByFile.Count = 0) and (LSymRemoved = 0) and (LSymNotes = nil) then
+      Exit('apply: no unused-uses or unused-symbol row without a "but" - '
+        + 'nothing written' + IfThen(LKept <> '', '; ' + LKept));
+    Result := Format('apply: %d `uses` %s removed from %s', [LRemoved,
+      IfThen(LRemoved = 1, 'entry', 'entries'), Plural(LFiles, 'file')]);
+    if (LSymRemoved > 0) or (LSymNotes <> nil) then
+      Result := Result + Format('; %s removed from %s, with what goes with '
+        + 'them (bodies, forwards, the rows using them, assignments)',
+        [Plural(LSymRemoved, 'declaration'), Plural(LSymFiles, 'file')]);
+    Result := Result + ' - the next call reads them again; run `compile`';
     if LKept <> '' then
       Result := Result + '; ' + LKept;
     for var LNote in LNotes do
@@ -16353,9 +16483,9 @@ begin
     raise EToolError.Create('`after_rows` adds to the unused-uses rows the '
       + 'entries needed only by unused declarations - add unused-uses to '
       + '`rules`');
-  if LApply and not LUnused then
-    raise EToolError.Create('`apply` removes the unused-uses rows with no '
-      + '"but" - add unused-uses to `rules`');
+  if LApply and not LUnused and not LSymbols then
+    raise EToolError.Create('`apply` removes the unused-uses and '
+      + 'unused-symbol rows with no "but" - add one of them to `rules`');
   if (LKinds <> nil) and not LSymbols then
     raise EToolError.Create('`kinds` narrows the rows of unused-symbol - '
       + 'add it to `rules`');
@@ -22361,16 +22491,21 @@ const
     + 'do (a unit whose initialization registers something is never '
     + 'offered). `apply: true` removes every unused-uses row without a '
     + '`but` from its file - the rows are weighed as removed together, one '
-    + 'rewrite per clause, the layout kept. Run `compile` after acting on '
-    + 'it. With unused-symbol in `rules`, or `after_rows`, unused-uses also '
-    + 'lists an entry needed only by unused declarations (needed only by '
-    + 'unused X - it goes with it, not alone), which `apply` leaves.",'
+    + 'rewrite per clause, the layout kept - and, with unused-symbol in '
+    + '`rules`, every unused-symbol row without a `but` with what goes with '
+    + 'it (its body and forward, the rows using it, an only-assigned one''s '
+    + 'assignments); a row that cannot go safely is kept and said why. Run '
+    + '`compile` after acting on it. With unused-symbol in `rules`, or '
+    + '`after_rows`, unused-uses also lists an entry needed only by unused '
+    + 'declarations (needed only by unused X - it goes with it, not alone), '
+    + 'which `apply` leaves.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"rules":{"type":"string","description":"Comma-separated: '
     + 'unused-uses, uses-to-implementation (the default: both), '
     + 'unused-symbol, unreferenced-units"},'
     + '"apply":{"type":"boolean","description":"Write: take the '
-    + 'unused-uses rows with no `but` out of their files (default false)"},'
+    + 'unused-uses and unused-symbol rows with no `but` out of their files '
+    + '(default false)"},'
     + '"after_rows":{"type":"boolean","description":"unused-uses also lists '
     + 'the entries needed only by unused declarations - they go with them, '
     + 'never alone. Costs the unused-declaration search (a whole group: '

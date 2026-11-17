@@ -759,7 +759,7 @@ Check 'lint bad rule' (Block $b 'lint {"rules":"nope"}') @('unknown rule `nope` 
 # the lint fixture's units, listed by programs that call nothing of them.
 Check 'lint unreferenced-units' (Block $b 'lint {"rules":"unreferenced-units"}') @('33 findings in 33 files of 44 own units: unreferenced-units 33 - 4 with a "but"', 'AppB\uColors.pas:1:6: unreferenced-units uColors - no program of the group uses it; listed by uBoxes.pas (no name of it used) and uLint.pas (no name of it used)', 'AppB\uLintReg.pas:1:6: unreferenced-units uLintReg - no program of the group uses it; listed by uLintAlias.pas (no name of it used) and uLintBase.pas (no name of it used); but it has initialization') @('uShapes -', 'uAppA -')
 Check 'lint unreferenced-units none' (Block $b 'lint {"rules":"unreferenced-units","file":"Shared/uShapes.pas"}') @('no findings (unreferenced-units) in Shared\uShapes.pas')
-Check 'lint apply needs the rule' (Block $b 'lint {"rules":"uses-to-implementation","apply":true}') @('`apply` removes the unused-uses rows with no "but" - add unused-uses to `rules`')
+Check 'lint apply needs the rule' (Block $b 'lint {"rules":"uses-to-implementation","apply":true}') @('`apply` removes the unused-uses and unused-symbol rows with no "but" - add one of them to `rules`')
 # unused-symbol (PasTree's FindUnusedSymbols): declarations nothing uses, a
 # record's field and a name in a branch not compiled with a "but"; an
 # override, the static method a descendant runs by inherited, the hiding one
@@ -1366,7 +1366,7 @@ $afterCopy = Join-Path ([IO.Path]::GetTempPath()) ('pastree-mcp-smoke-after-' + 
 $afterCalls = $afterCopy + '.calls'
 Copy-Item -Recurse (Join-Path $here 'fixtures\extra\AppU') $afterCopy
 try {
-    [IO.File]::WriteAllText($afterCalls, "lint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"file`":`"uKeep.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"rules`":`"unused-uses`",`"limit`":0,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses,unused-symbol`"}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`"}`nlint {`"rules`":`"unused-symbol`",`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"apply`":true,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`n")
+    [IO.File]::WriteAllText($afterCalls, "lint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"file`":`"uKeep.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"rules`":`"unused-uses`",`"limit`":0,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses,unused-symbol`"}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`"}`nlint {`"rules`":`"unused-symbol`",`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"apply`":true,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses,unused-symbol`",`"apply`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`"}`n")
     $ErrorActionPreference = 'Continue'
     try { $afterOut = (& $Exe --project (Join-Path $afterCopy 'AppU.dpr') --log none --script $afterCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
     finally { $ErrorActionPreference = 'Stop' }
@@ -1383,9 +1383,14 @@ Check 'lint after rows count' $afterParts[3] @('2 findings in 1 file of 4 own un
 Check 'lint after rows with unused-symbol' $afterParts[4] @('3 findings in 1 file of 1 own unit: unused-uses 2, unused-symbol 1', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk - it goes with it, not alone', 'uAfter.pas:13:11: unused-symbol WriteDisk (procedure) - nothing in the group uses it')
 Check 'lint after rows plain' $afterParts[5] @('1 finding in 1 file of 1 own unit: unused-uses 1', 'uAfter.pas:11:3: unused-uses uPlain - no name of it is used here') @('needed only', 'uDisk')
 Check 'lint after rows needs the rule' $afterParts[6] @('`after_rows` adds to the unused-uses rows the entries needed only by unused declarations - add unused-uses to `rules`')
-Check 'lint after rows apply' $afterParts[7] @('apply: 1 `uses` entry removed from 1 file - the next call reads them again; run `compile`; 1 row needed only by unused declarations left - each goes with the declarations it names, removed by hand')
+Check 'lint after rows apply' $afterParts[7] @('apply: 1 `uses` entry removed from 1 file - the next call reads them again; run `compile`; 1 row needed only by unused declarations left - each goes with the declarations it names: call again once they are removed')
 Check 'lint after rows applied' $afterParts[8] @('1 finding in 1 file of 1 own unit: unused-uses 1', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk') @('uPlain')
-Check 'lint after rows applied text' $afterText @("uses`r`n  uDisk;`r`n")
+# `apply` with unused-symbol (0.63.0, PasTree.SymbolEdit): WriteDisk goes
+# with its body; uDisk, needed only by it, is left - and the next call finds
+# it plainly unused.
+Check 'lint apply unused-symbol' $afterParts[9] @('1 declaration removed from 1 file, with what goes with them', 'the next call reads them again; run `compile`', '1 row needed only by unused declarations left')
+Check 'lint after the declaration' $afterParts[10] @('uAfter.pas:10:3: unused-uses uDisk - no name of it is used here') @('needed only')
+Check 'lint after rows applied text' $afterText @("uses`r`n  uDisk;`r`n", "implementation`r`n`r`nuses`r`n  uDisk;`r`n`r`nprocedure RunAfter;") @('WriteDisk')
 
 # ---- lint: a package's exported declarations ----------------------------------------
 # tests\fixtures\extra\PkgE, a copy: a package's interface is exported by
