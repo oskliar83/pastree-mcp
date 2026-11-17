@@ -1387,6 +1387,41 @@ Check 'lint after rows apply' $afterParts[7] @('apply: 1 `uses` entry removed fr
 Check 'lint after rows applied' $afterParts[8] @('1 finding in 1 file of 1 own unit: unused-uses 1', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk') @('uPlain')
 Check 'lint after rows applied text' $afterText @("uses`r`n  uDisk;`r`n")
 
+# ---- lint: a package's exported declarations ----------------------------------------
+# tests\fixtures\extra\PkgE, a copy: a package's interface is exported by
+# default (PasTree 0.207.0) - TPkgApi, its public Run and PkgCall are used,
+# not rows, and so is the private Helper only Run calls; the private FSpare
+# and the implementation's Dead, which nothing uses, are rows. PkgCall's
+# parameter is not weighed: its signature is its callers'. "exported": false
+# weighs the package's units as an application's: the interface rows back.
+Write-Host '--- CLI, lint: a package''s exported declarations'
+$pkgCopy = Join-Path ([IO.Path]::GetTempPath()) ('pastree-mcp-smoke-pkg-' + [Guid]::NewGuid().ToString('N'))
+$pkgCalls = $pkgCopy + '.calls'
+Copy-Item -Recurse (Join-Path $here 'fixtures\extra\PkgE') $pkgCopy
+try {
+    [IO.File]::WriteAllText($pkgCalls, "lint {`"rules`":`"unused-symbol`"}`nlint {`"symbol`":`"PkgCall, Dead, TPkgApi.Helper`"}`nlint {`"symbol`":`"AUnused`",`"file`":`"uPkgApi.pas`",`"line`":19}`n")
+    $ErrorActionPreference = 'Continue'
+    try { $pkgOut = (& $Exe --project (Join-Path $pkgCopy 'PkgE.dpk') --log none --script $pkgCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
+    finally { $ErrorActionPreference = 'Stop' }
+    [IO.File]::WriteAllText((Join-Path $pkgCopy 'pastree-mcp.json'), '{"exported": false}')
+    [IO.File]::WriteAllText($pkgCalls, "lint {`"rules`":`"unused-symbol`"}`nlint {`"symbol`":`"PkgCall`"}`nstatus {}`n")
+    $ErrorActionPreference = 'Continue'
+    try { $pkgInternal = (& $Exe --project (Join-Path $pkgCopy 'PkgE.dpk') --log none --script $pkgCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
+    finally { $ErrorActionPreference = 'Stop' }
+}
+finally {
+    Remove-Item -Recurse -Force $pkgCopy -ErrorAction SilentlyContinue
+    Remove-Item -Force $pkgCalls -ErrorAction SilentlyContinue
+}
+$pkgParts = $pkgOut -split '(?m)^=== '
+Check 'lint package exported' $pkgParts[1] @('2 findings in 1 file of 1 own unit: unused-symbol 2', 'uPkgApi.pas:13:5: unused-symbol TPkgApi.FSpare', 'uPkgApi.pas:23:11: unused-symbol Dead (procedure) - nothing in the group uses it', '3 exported declarations (the interface of a package''s or a library unit)') @('PkgCall', 'TPkgApi.Run', 'TPkgApi.Helper', 'but')
+Check 'lint package exported symbol' $pkgParts[2] @('not weighed PkgCall (procedure) - exported - the interface of a package''s or a library unit: a program outside the analysis may use it', 'unused Dead (procedure)', 'used TPkgApi.Helper (procedure)')
+Check 'lint package exported parameter' $pkgParts[3] @('not weighed PkgCall.AUnused', 'exported - the interface of a package''s or a library unit')
+$pkgInParts = $pkgInternal -split '(?m)^=== '
+Check 'lint package internal' $pkgInParts[1] @('unused-symbol PkgCall (procedure) - nothing in the group uses it', 'unused-symbol TPkgApi (class)', 'unused-symbol Dead (procedure)') @('exported declarations')
+Check 'lint package internal symbol' $pkgInParts[2] @('unused PkgCall (procedure) - nothing in the group uses it')
+Check 'lint package internal status' $pkgInParts[3] @('"exported": false - lint unused-symbol weighs a package''s units as an application''s')
+
 # ---- format: every style field taken -----------------------------------------------
 # The fields come from TPasFormatOptions through RTTI; the refusal of an
 # unknown one lists them all with their defaults. Each passed back by name at
@@ -1589,27 +1624,26 @@ try {
     $null = Rpc 52 'tools/call' '{"name":"find","arguments":{"query":"TCircle"}}'
 
     # A library (SPEC 9.7): "exported" makes AppB\uBoxes.pas a library unit -
-    # its interface rows keep a `but` "exported", the header splits the rows
-    # by reach; "hosts" names a program outside the group, and what it writes
-    # is used - left out of the rows, said under them.
+    # its interface is used (not weighed, counted), so the rows of its
+    # interface are gone (TShapeBox, TBigBox, NeverCalled); what another unit
+    # cannot name is weighed - the private TShapeBox.FOnChange, a member of
+    # the row TShapeBox before, is a row of its own now.
+    # A pattern matching no unit: the rows as before (the empty case).
     $libJson = Join-Path $copy 'pastree-mcp.json'
     [IO.File]::WriteAllText($libJson, '{"exported": ["AppB/uBoxes.pas"]}', $utf8)
     $r = Rpc 70 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":0}}'
-    Check 'lint exported limit 0' (ToolText $r) @('25 findings in 1 file of 1 own unit', 'unused-symbol by reach: 3 exported (a library unit''s interface), 0 used only by exported ones, 20 private, 2 only assigned')
-    $r = Rpc 71 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":3}}'
-    Check 'lint exported but' (ToolText $r) @('AppB\uBoxes.pas:26:3: unused-symbol TBigBox (class) - nothing in the group uses it, but exported - in the interface of a library unit, a program outside the analysis may use it') @('TWideBox')
-    $hostDir = $copy + '-host'
-    New-Item -ItemType Directory -Force $hostDir | Out-Null
-    [IO.File]::WriteAllText((Join-Path $hostDir 'Host.dpr'), "program Host;`r`n`r`nuses`r`n  uBoxes;`r`n`r`nbegin`r`n  NeverCalled;`r`nend.`r`n", $utf8)
-    [IO.File]::WriteAllText($libJson, '{"exported": ["AppB/uBoxes.pas"], "hosts": ["' + (Join-Path $hostDir 'Host.dpr').Replace('\', '/') + '"]}', $utf8)
-    $r = Rpc 72 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":0}}'
-    Check 'lint hosts' (ToolText $r) @('24 findings in 1 file of 1 own unit', 'unused-symbol by reach: 2 exported (a library unit''s interface), 0 used only by exported ones, 20 private, 2 only assigned', '(unused-symbol leaves out 1 exported declaration a host program writes - "hosts" of pastree-mcp.json, word matches)')
+    Check 'lint exported limit 0' (ToolText $r) @('23 findings in 1 file of 1 own unit', ' exported declarations (the interface of a package''s or a library unit)') @('unused-symbol by reach')
+    $r = Rpc 71 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas"}}'
+    Check 'lint exported rows' (ToolText $r) @('AppB\uBoxes.pas:178:3: unused-symbol TCounter (class) - nothing in the group uses it', 'AppB\uBoxes.pas:16:5: unused-symbol TShapeBox.FOnChange (field)') @('unused-symbol TBigBox', 'unused-symbol TShapeBox (class)', 'unused-symbol NeverCalled', 'exported - in the interface')
     $r = Rpc 73 'tools/call' '{"name":"lint","arguments":{"symbol":"NeverCalled, TCounter"}}'
-    Check 'lint hosts symbol' (ToolText $r) @('AppB\uBoxes.pas:31:11: used NeverCalled (procedure) - exported, and a host program writes it ("hosts" of pastree-mcp.json, a word match); nothing in the group uses it', 'AppB\uBoxes.pas:178:3: unused TCounter (class) - nothing in the group uses it')
+    Check 'lint exported symbol' (ToolText $r) @('AppB\uBoxes.pas:31:11: not weighed NeverCalled (procedure) - exported - the interface of a package''s or a library unit: a program outside the analysis may use it', 'AppB\uBoxes.pas:178:3: unused TCounter (class) - nothing in the group uses it')
     $r = Rpc 74 'tools/call' '{"name":"status","arguments":{}}'
-    Check 'lint hosts status' (ToolText $r) @('  "exported": AppB/uBoxes.pas - lint unused-symbol says a library unit''s interface rows are exported', '1 program(s) whose uses of the library count (word matches)')
+    Check 'lint exported status' (ToolText $r) @('  "exported": [AppB/uBoxes.pas] - lint unused-symbol takes these units'' interface as used (a program outside the group may call it)')
+    # "hosts" (0.60.0-0.61.0) is gone: a host can only use what is exported.
+    [IO.File]::WriteAllText($libJson, '{"exported": ["Nowhere/*.pas"], "hosts": ["../Host.dpr"]}', $utf8)
+    $r = Rpc 72 'tools/call' '{"name":"lint","arguments":{"rules":"unused-symbol","file":"AppB/uBoxes.pas","limit":0}}'
+    Check 'lint exported none' (ToolText $r) @('25 findings in 1 file of 1 own unit', '"hosts" is not a key of it') @('exported declarations')
     Remove-Item $libJson
-    Remove-Item -Recurse -Force $hostDir
     # The reload its removal brings, taken by a call of its own.
     $null = Rpc 75 'tools/call' '{"name":"find","arguments":{"query":"TCircle"}}'
 

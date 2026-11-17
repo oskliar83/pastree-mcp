@@ -1277,27 +1277,25 @@ gap between the answers and the truth.
      with where (a routine a client plan named). "It goes with
      it" for one user; "used only by itself and by unused X" for recursion
      beside a caller.
-     A library (0.60.0, PasTree 0.205.0's TPasUnusedLibrary): `pastree-mcp.json`'s
-     `"exported"` - `true` for the units of the group's packages (.dpk), or
-     own unit paths and patterns (PasTree's `["source/*.pas"]`) - makes a
-     unit a library's: a declaration another unit can name (its interface,
-     a member of a type declared there that is not private) stays a row with
-     the `but` "exported", and a row only such rows use gets it down the
-     chain. `"hosts"` - the programs outside the group that use it (paths or
-     patterns of .dproj/.dpr) - weighs them instead: every own unit a host
-     file names is a library unit too, an exported row a host file writes
-     (a unit-level name in a file naming its unit, a member's name in any;
-     a word match, each host's directory tree as git lists it) is used and
-     left out with every row going back to it, said under the rows, and one
-     no host writes has no `but` of its own; host files not all read in
-     10 s leave a `but` on it. `symbol` answers "used ... a host program
-     writes it". With either key the header splits the unused-symbol rows
-     by reach: exported, used only by exported ones, private, only assigned
-     - on PasTree's own group 90 rows were 29 API its hosts call, 19 used by
-     `tools/*.dpr`, 35-40 dead; with tools in `also`, `exported` and
-     `hosts` 34 rows are left, 20 with no `but` (63 without the hosts: 55
-     exported). Neither key: the rule as before (the client group 8,342
-     rows before and after).
+     A library (0.60.0, PasTree 0.205.0's TPasUnusedLibrary; used since
+     0.62.0, PasTree 0.207.0): a unit a package (.dpk) of the analysis
+     contains is a library's by default, and `pastree-mcp.json`'s
+     `"exported"` names more - own unit paths and patterns (PasTree's
+     `["source/*.pas"]`) - or, `false`, weighs a package's units as an
+     application's. A declaration another unit can name (its interface, a
+     member of a type declared there that is not private) is exported:
+     used, never a row - not weighed and counted under the rows ("N exported
+     declarations"), `symbol` answering "not weighed ... exported"; what
+     only it uses is used with it, and an exported routine's parameters are
+     not weighed. A private member or an implementation declaration nothing
+     uses is still a row. From 0.60.0 to 0.61.0 an exported declaration
+     stayed a row with the `but` "exported", `"hosts"` (programs outside
+     the group, matched by word) dropped the ones a host wrote, and the
+     header split the rows by reach - on PasTree's own group 90 rows were
+     29 API its hosts call, 19 used by `tools/*.dpr`, 35-40 dead. A host
+     can only use what is exported, so those rows said nothing an agent
+     could act on without reading every host: the `but`, `"hosts"` and the
+     split are gone.
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.

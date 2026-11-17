@@ -13439,7 +13439,6 @@ type
     // routine, var, const, field, property); '' for the uses rules.
     Kind: string;
     How: TPasUnusedHow;        // unused-symbol: why a row is one
-    Api: TPasUnusedApi;        // unused-symbol: exported (TPasUnusedLibrary)
     Entry: string;             // unused-uses: the entry's name, as written
     // unused-symbol: the `but`, apart from Text - a `but` many rows share is
     // said once (AppendButRows); '' with none. The uses rules keep theirs
@@ -13537,7 +13536,7 @@ type
       out ARow: TPasUnusedUse): Boolean;
     var AfterRows: Boolean;
     // The unused declarations this analysis' unused-symbol search found
-    // (its rows and the members of row types, not exported ones), when the
+    // (its rows and the members of row types), when the
     // lint ran it before AskTree: reused instead of a second search.
     var SymbolRows: TArray<TPasUnusedSymbol>;
     var HasSymbolRows: Boolean;
@@ -15169,7 +15168,8 @@ const
     'in units that replace a library unit of their name',
     'Register procedures of a package''s units (the IDE calls them)',
     'parameters of a routine whose address is taken, or of an external, '
-      + 'exported or assembler one');
+      + 'exported or assembler one',
+    'exported declarations (the interface of a package''s or a library unit)');
 
 { unused-symbol: PasTree's FindUnusedSymbols (PasTree.Sema.Lint) over every
   analysis holding the units asked about, through the workspace (light mode
@@ -15441,56 +15441,24 @@ begin
 end;
 
 type
-  { unused-symbol's library (ALSO_FILE_NAME's "exported" and "hosts"):
-    PasTree's TPasUnusedLibrary and the own units it names - by a pattern of
-    "exported", and with "hosts" every own unit a host file names (a unit a
-    program outside the group lists is a library unit to it) - and the host
-    programs' files, read. On: anything marks a library. }
+  { unused-symbol's library (ALSO_FILE_NAME's "exported"): PasTree's
+    TPasUnusedLibrary - a package's units exported unless "exported" is
+    false - and the own units a pattern of "exported" names. An exported
+    declaration is used (usExported), never a row. }
   TLintLibrary = record
-    On: Boolean;
     Lib: TPasUnusedLibrary;
     Exported: TArray<string>;
-    HostTexts: TArray<TOutsideText>;
-    HostCount, Searched: Integer;    // host files, and how many were read
   end;
 
 function LintLibraryOf(AWs: TMcpWorkspace): TLintLibrary;
-const
-  HOST_MS = 10000;
 var
-  LFiles: TArray<string>;
-  LCut, LNamed: Boolean;
-  LText: TOutsideText;
-  LSW: TStopwatch;
-  LUnit, LName: string;
-  LLine: Integer;
-  LLineText: string;
+  LUnit: string;
   LSeen: TDictionary<string, Boolean>;
 begin
   Result := Default(TLintLibrary);
-  Result.On := AWs.HasLibrary;
-  if not Result.On then
+  Result.Lib.PackagesInternal := AWs.PackagesInternal;
+  if not AWs.HasExportPatterns then
     Exit;
-  Result.Lib.Packages := AWs.ExportPackages;
-  Result.Lib.Hosts := AWs.HostProjects <> nil;
-  if Result.Lib.Hosts then
-  begin
-    LFiles := AWs.HostSources(LCut);
-    Result.HostCount := Length(LFiles);
-    LSW := TStopwatch.StartNew;
-    for var LF in LFiles do
-    begin
-      if LSW.ElapsedMilliseconds > HOST_MS then
-        Break;
-      Inc(Result.Searched);
-      if OutsideTextOf(LF, LText) then
-        Result.HostTexts := Result.HostTexts + [LText];
-    end;
-    if LCut then
-      Inc(Result.HostCount);   // the walk stopped: not all were read
-    Log('  lint: %d of %d host files read: %d ms', [Result.Searched,
-      Result.HostCount, LSW.ElapsedMilliseconds]);
-  end;
   LSeen := TDictionary<string, Boolean>.Create;
   try
     for var LA in AWs.Analyses do
@@ -15498,22 +15466,9 @@ begin
         for var LMid := 0 to LA.Proj.ModelCount - 1 do
         begin
           LUnit := LA.Proj.ModelFile(LMid);
-          if not SameText(ExtractFileExt(LUnit), '.pas') or
-             not AWs.IsOwnFile(LUnit) or
-             not LSeen.TryAdd(LowerCase(LUnit), True) then
-            Continue;
-          LNamed := AWs.IsExportedFile(LUnit);
-          LName := TPath.GetFileNameWithoutExtension(LUnit);
-          if not LNamed then
-            for var LT in Result.HostTexts do
-              // The unit's name as a word: its `uses` entry.
-              if OutsideFileUses(LT, LName, Copy(LName, LastDelimiter('.',
-                 LName) + 1, MaxInt), LLine, LLineText) then
-              begin
-                LNamed := True;
-                Break;
-              end;
-          if LNamed then
+          if SameText(ExtractFileExt(LUnit), '.pas') and
+             AWs.IsOwnFile(LUnit) and LSeen.TryAdd(LowerCase(LUnit), True) and
+             AWs.IsExportedFile(LUnit) then
             Result.Exported := Result.Exported + [LUnit];
         end;
   finally
@@ -15521,45 +15476,8 @@ begin
   end;
 end;
 
-// Does a host file of ALib use AName, declared in AUnitFile? A word match: a
-// unit-level name in a file naming its unit (to name it, its `uses` must); a
-// member's name in any (its type reaches a host through other units).
-function HostUses(const ALib: TLintLibrary; const AUnitFile,
-  AName: string): Boolean;
-var
-  LWord: string;
-  LLine: Integer;
-  LLineText: string;
-begin
-  Result := False;
-  LWord := StripGenerics(AName);
-  if LastDelimiter('.', LWord) > 0 then
-  begin
-    LWord := LowerCase(Copy(LWord, LastDelimiter('.', LWord) + 1, MaxInt));
-    for var LT in ALib.HostTexts do
-      if OutsideHasWord(LT, LWord) then
-        Exit(True);
-  end
-  else
-    for var LT in ALib.HostTexts do
-      if OutsideFileUses(LT, TPath.GetFileNameWithoutExtension(AUnitFile),
-         LWord, LLine, LLineText) then
-        Exit(True);
-end;
-
-// The `but` of an exported row no host was seen to use when the host files
-// were not all read; '' when they were (it is as sure as any row).
-function HostsCutBut(const ALib: TLintLibrary): string;
-begin
-  Result := '';
-  if ALib.Searched < ALib.HostCount then
-    Result := Format('exported - %d of %d files of the hosts were read, a '
-      + 'host may use it', [ALib.Searched, ALib.HostCount]);
-end;
-
-// ALints (nil: none): each analysis' own rows - not exported ones, whose
-// uses a program outside may need - kept on its TLintAnalysis for the
-// unused-uses rows they free (SymbolRows).
+// ALints (nil: none): each analysis' own rows kept on its TLintAnalysis for
+// the unused-uses rows they free (SymbolRows).
 procedure LintUnusedSymbols(AWs: TMcpWorkspace; const AFiles: TArray<string>;
   ARows: TList<TLintRow>; out ASkipped: string; out AInRow: Integer;
   out AFoot: string; ALints: TObjectList<TLintAnalysis> = nil);
@@ -15583,20 +15501,12 @@ var
   LRow: TLintRow;
   LS: TPasUnusedSymbol;
   LLib: TLintLibrary;
-  LDropped: TDictionary<string, Boolean>;      // key -> a host uses it
-  LDroppedNames: TDictionary<string, Boolean>; // their names, lower
-  LChanged: Boolean;
-  LHostUsed, LHostChain: Integer;
 begin
   ASkipped := '';
   AInRow := 0;
   AFoot := '';
   LAsks := nil;
   LLib := LintLibraryOf(AWs);
-  LHostUsed := 0;
-  LHostChain := 0;
-  LDropped := TDictionary<string, Boolean>.Create;
-  LDroppedNames := TDictionary<string, Boolean>.Create;
   LAskRow := nil;
   FillChar(LMax, SizeOf(LMax), 0);
   LInRowKeys := TDictionary<string, Boolean>.Create;
@@ -15631,10 +15541,7 @@ begin
         for var LL in ALints do
           if LL.A = LA then
           begin
-            LL.SymbolRows := nil;
-            for var LSym in LRes + LInRow do
-              if LSym.Api = uaNone then
-                LL.SymbolRows := LL.SymbolRows + [LSym];
+            LL.SymbolRows := LRes + LInRow;
             LL.HasSymbolRows := True;
             LL.SymbolGen := LA.WS.Generation;
           end;
@@ -15674,46 +15581,11 @@ begin
         end;
       end;
     end;
-    // Hosts: an exported row a host program writes is used there, and so is
-    // every row going back to it (By, to a fixed point) - left out.
-    if LLib.Lib.Hosts then
-    begin
-      // Only what is a row of the group: unused in every analysis holding
-      // its unit.
-      for var LP in LFirst do
-        if LHeld.TryGetValue(LUnitOf[LP.Key], LN) and
-           (LUnusedIn[LP.Key] >= LN) and
-           (LP.Value.Api = uaExported) and HostUses(LLib, LUnitOf[LP.Key],
-           LP.Value.Name) then
-        begin
-          LDropped.Add(LP.Key, True);
-          LDroppedNames.AddOrSetValue(LowerCase(LP.Value.Name), True);
-        end;
-      LHostUsed := LDropped.Count;
-      repeat
-        LChanged := False;
-        for var LP in LFirst do
-          if not LDropped.ContainsKey(LP.Key) and
-             LHeld.TryGetValue(LUnitOf[LP.Key], LN) and
-             (LUnusedIn[LP.Key] >= LN) then
-            for var LB in LP.Value.By do
-              if (LB <> '') and LDroppedNames.ContainsKey(LowerCase(LB)) then
-              begin
-                LDropped.Add(LP.Key, True);
-                LDroppedNames.AddOrSetValue(LowerCase(LP.Value.Name), True);
-                LChanged := True;
-                Break;
-              end;
-      until not LChanged;
-      LHostChain := LDropped.Count - LHostUsed;
-    end;
     for var LP in LFirst do
     begin
       LS := LP.Value;
       LUnit := LUnitOf[LP.Key];
       if not LHeld.TryGetValue(LUnit, LN) or (LUnusedIn[LP.Key] < LN) then
-        Continue;
-      if LDropped.ContainsKey(LP.Key) then
         Continue;
       LRow := Default(TLintRow);
       LRow.FilePath := LS.FileName;
@@ -15725,15 +15597,6 @@ begin
       LRow.But := UnusedBut(LS);
       LRow.Doubt := LS.Doubts <> nil;
       LRow.How := LS.How;
-      LRow.Api := LS.Api;
-      // Hosts not all read: what no host was seen to use may still be.
-      if LLib.Lib.Hosts and (LS.Api = uaExported) and
-         (HostsCutBut(LLib) <> '') then
-      begin
-        LRow.But := HostsCutBut(LLib) + IfThen(LRow.But <> '', '; ' +
-          LRow.But, '');
-        LRow.Doubt := True;
-      end;
       // Asked outside the index: a unit's declaration (a program's no other
       // file can use).
       LModel := LFirstA[LP.Key].Proj.ModelFile(LS.UnitId);
@@ -15775,20 +15638,12 @@ begin
       if LMax[LW] > 0 then
         ASkipped := ASkipped + IfThen(ASkipped <> '', ', ') + Format('%d %s',
           [LMax[LW], cUnusedSkipText[LW]]);
-    if LHostUsed > 0 then
-      AFoot := AFoot + IfThen(AFoot <> '', sLineBreak) + Format('(unused-symbol '
-        + 'leaves out %s a host program writes%s - "hosts" of %s, word '
-        + 'matches)', [Plural(LHostUsed, 'exported declaration'), IfThen(
-        LHostChain > 0, Format(', and %d only those use', [LHostChain]), ''),
-        ALSO_FILE_NAME]);
     // Left out in every analysis holding it: its type is a row of the group.
     for var LK in LInRowKeys.Keys do
       if not LFirst.ContainsKey(LK) and LHeld.TryGetValue(LUnitOf[LK], LN) and
          (LUnusedIn[LK] >= LN) then
         Inc(AInRow);
   finally
-    LDroppedNames.Free;
-    LDropped.Free;
     LInRowKeys.Free;
     LUnitOf.Free;
     LFirstA.Free;
@@ -15820,7 +15675,9 @@ const
       + 'when it loads the package',
     'a parameter of a routine whose signature is fixed: code takes its '
       + 'address (a procedural value, an event handler assigned, a property '
-      + 'accessor), or it is external, exported or assembler');
+      + 'accessor), or it is external, exported or assembler',
+    'exported - the interface of a package''s or a library unit: a program '
+      + 'outside the analysis may use it');
 
   MAX_LINT_SYMBOLS = 50;
 
@@ -15842,10 +15699,10 @@ type
     Row: TPasUnusedSymbol;
     RowA: TMcpAnalysis;
     Unused, Used, Held: Integer;
-    HostUsed: Boolean;     // exported, and a host program writes it
   end;
 var
   LLib: TLintLibrary;
+  LLibDone: Boolean;
   LV: TJSONValue;
   LItems: TObjectList<TJSONObject>;
   LOne: TJSONObject;
@@ -15915,6 +15772,7 @@ begin
         + 'on it - several at once: a list of {"file","line","name"}');
     // Each name resolved - an overloaded routine's name to each overload.
     LLib := Default(TLintLibrary);
+    LLibDone := False;
     LCuts := nil;
     for LOne in LItems do
     begin
@@ -15985,8 +15843,11 @@ begin
       end;
       if LKeys = nil then
         Continue;
-      if not LLib.On and AWs.HasLibrary then
+      if not LLibDone then
+      begin
         LLib := LintLibraryOf(AWs);
+        LLibDone := True;
+      end;
       LChecks := LA.WS.CheckUnusedSymbols(LKeys, LLib.Lib, LLib.Exported);
       AWs.QueryDone(LA);
       for var LI := 0 to High(LChecks) do
@@ -16039,14 +15900,6 @@ begin
       if LA1.Used > 0 then
       begin
         LA1.Verdict := uvUsed;
-        Inc(LCounts[1]);
-      end
-      else if (LA1.Unused > 0) and (LA1.Unused = LA1.Held) and
-        LLib.Lib.Hosts and (LA1.Row.Api = uaExported) and HostUses(LLib,
-        LA1.RowA.Proj.ModelFile(LA1.Row.UnitId), LA1.Row.Name) then
-      begin
-        LA1.Verdict := uvUsed;
-        LA1.HostUsed := True;
         Inc(LCounts[1]);
       end
       else if (LA1.Unused > 0) and (LA1.Unused = LA1.Held) then
@@ -16111,19 +15964,10 @@ begin
               HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId), LA1.Row.Sym),
               UnusedWhy(LA1.Row)]);
             LWhy := UnusedBut(LA1.Row);
-            if LLib.Lib.Hosts and (LA1.Row.Api = uaExported) and
-               (HostsCutBut(LLib) <> '') then
-              LWhy := HostsCutBut(LLib) + IfThen(LWhy <> '', '; ' + LWhy, '');
             if LOutside[LI] <> '' then
               LWhy := LWhy + IfThen(LWhy <> '', '; ') + LOutside[LI];
           end;
         uvUsed:
-          if LA1.HostUsed then
-            LText := Format('%sused %s (%s) - exported, and a host program '
-              + 'writes it ("hosts" of %s, a word match); nothing in the '
-              + 'group uses it', [LWhere, LA1.Target.Name, LA1.Target.Head,
-              ALSO_FILE_NAME])
-          else
           // A routine may be used by a bare `inherited;` alone, which
           // `references` does not list and `callers` does.
           LText := Format('%sused %s (%s)%s - %s lists where', [LWhere,
@@ -16673,30 +16517,6 @@ begin
           + 'declarations - each goes with the ones it names, not alone '
           + '(`apply` leaves %s)', [LUsesBy, IfThen(LUsesBy = 1, 'it',
           'them')]));
-      // A library (ALSO_FILE_NAME's "exported" / "hosts"): what a program
-      // outside the group may use apart from what is the library's own -
-      // on PasTree's own group 29 of 90 rows were API its hosts call.
-      if AWs.HasLibrary and LByRule.ContainsKey(LINT_UNUSED_SYMBOL) then
-      begin
-        var LExp := 0;
-        var LByExp := 0;
-        var LPriv := 0;
-        var LAssigned := 0;
-        for var LRow in LArr do
-          if LRow.Rule <> LINT_UNUSED_SYMBOL then
-            Continue
-          else if LRow.Api = uaExported then
-            Inc(LExp)
-          else if LRow.Api = uaByExported then
-            Inc(LByExp)
-          else if LRow.How = uhOnlyWritten then
-            Inc(LAssigned)
-          else
-            Inc(LPriv);
-        LSb.AppendLine(Format('unused-symbol by reach: %d exported (a library '
-          + 'unit''s interface), %d used only by exported ones, %d private, %d '
-          + 'only assigned', [LExp, LByExp, LPriv, LAssigned]));
-      end;
     end;
     // `sure` and `kinds` narrow the rows listed; the header counts all.
     if LSure or (LKinds <> nil) then
@@ -22523,7 +22343,9 @@ const
     + 'property - nothing in the group uses, by name, a bare inherited or a '
     + 'form file; what is reached another way is not weighed and counted '
     + '(published members, virtual and interface methods, attributes, '
-    + 'for-in), and a `but` names what the index cannot settle (a branch '
+    + 'for-in, and the exported interface of a package''s unit or of a '
+    + 'library unit pastree-mcp.json''s `exported` names - a program outside '
+    + 'the group may use it), and a `but` names what the index cannot settle (a branch '
     + 'not compiled or a string spelling it, another overload in use, a '
     + 'namesake in another unit, a file outside the index writing it); a '
     + '`but` several rows share is said once and numbered. A declaration used '

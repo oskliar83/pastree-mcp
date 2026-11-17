@@ -1,0 +1,9 @@
+package PkgE;
+
+requires
+  rtl;
+
+contains
+  uPkgApi in 'uPkgApi.pas';
+
+end.

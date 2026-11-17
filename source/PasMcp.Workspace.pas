@@ -195,14 +195,12 @@ type
     FAlsoListed: TArray<string>;
     FAlsoLike: string;
     FAlsoNote: string;
-    // ALSO_FILE_NAME's "exported" (true: the group's packages' units; a list:
-    // own unit paths or patterns) and "hosts" (programs outside the group
-    // that use it, paths or patterns) - lint unused-symbol's library
-    // (PasTree's TPasUnusedLibrary); FHosts the project files they match.
-    FExportPackages: Boolean;
+    // ALSO_FILE_NAME's "exported" - lint unused-symbol's library (PasTree's
+    // TPasUnusedLibrary), whose exported declarations are used: a list, own
+    // unit paths or patterns; false, a package's units weighed as an
+    // application's (FPackagesInternal; by default they are exported).
+    FPackagesInternal: Boolean;
     FExportPatterns: TArray<string>;
-    FHostPatterns: TArray<string>;
-    FHosts: TArray<string>;
     FStudioWanted: string;
     FStudio: TMcpStudio;
     // Started with no Delphi project (SetNoProject): why, '' when there is one.
@@ -421,17 +419,13 @@ type
     // that runs the tools, and `initialize` is answered before that.
     property StudioWanted: string read FStudioWanted;
     property Members: TArray<TMcpMember> read FMembers;
-    // ALSO_FILE_NAME's "exported" and "hosts" (lint unused-symbol): whether
-    // a package's units are a library's, whether APath (an own unit) is one
-    // by a pattern, whether anything marks a library at all, the host
-    // projects, and their Pascal sources outside the group directory
-    // (HostSources: each host's directory tree as git lists it, or walked;
-    // ACut: the walk ran out of time).
-    property ExportPackages: Boolean read FExportPackages;
+    // ALSO_FILE_NAME's "exported" (lint unused-symbol): whether a package's
+    // units are weighed as an application's ("exported": false), whether
+    // APath (an own unit) is a library's by a pattern, whether any pattern
+    // is given.
+    property PackagesInternal: Boolean read FPackagesInternal;
     function IsExportedFile(const APath: string): Boolean;
-    function HasLibrary: Boolean;
-    property HostProjects: TArray<string> read FHosts;
-    function HostSources(out ACut: Boolean): TArray<string>;
+    function HasExportPatterns: Boolean;
     property Analyses: TObjectList<TMcpAnalysis> read FAnalyses;
   end;
 
@@ -2211,12 +2205,13 @@ var
         + 'out'#13#10, [AKey]);
   end;
 
-  // true: the units of the group's packages; a list: own unit paths or
-  // patterns ("source/*.pas").
+  // A list: own unit paths or patterns ("source/*.pas"); false: a package's
+  // units weighed as an application's; true: the default, a package's
+  // units exported.
   procedure ReadExported(AValue: TJSONValue);
   begin
     if AValue is TJSONBool then
-      FExportPackages := TJSONBool(AValue).AsBoolean
+      FPackagesInternal := not TJSONBool(AValue).AsBoolean
     else if AValue <> nil then
       FExportPatterns := StringsOf(AValue, 'exported');
   end;
@@ -2226,10 +2221,8 @@ begin
   FAlsoListed := nil;
   FAlsoLike := '';
   FAlsoNote := '';
-  FExportPackages := False;
+  FPackagesInternal := False;
   FExportPatterns := nil;
-  FHostPatterns := nil;
-  FHosts := nil;
   FAlsoExists := StampOf(FAlsoFile, FAlsoStamp);
   if not FAlsoExists then
     Exit;
@@ -2252,16 +2245,14 @@ begin
       Exit;
     end;
     for var LPair in TJSONObject(LJson) do
-      if not MatchText(LPair.JsonString.Value, ['also', 'like', 'exported',
-         'hosts']) then
+      if not MatchText(LPair.JsonString.Value, ['also', 'like',
+         'exported']) then
         FAlsoNote := FAlsoNote + Format('"%s" is not a key of it - "also" (the '
           + 'projects: paths or patterns, relative to the group''s directory), '
-          + '"like" (the member whose settings a .dpr takes), "exported" '
-          + '(true, or the library units: paths or patterns) and "hosts" '
-          + '(the programs outside the group that use it) are'#13#10,
-          [LPair.JsonString.Value]);
+          + '"like" (the member whose settings a .dpr takes) and "exported" '
+          + '(the library units: paths or patterns; false: a package''s units '
+          + 'are not exported) are'#13#10, [LPair.JsonString.Value]);
     ReadExported(TJSONObject(LJson).GetValue('exported'));
-    FHostPatterns := StringsOf(TJSONObject(LJson).GetValue('hosts'), 'hosts');
     LAlso := TJSONObject(LJson).GetValue('also');
     if LAlso is TJSONString then
       FAlsoPatterns := [TJSONString(LAlso).Value]
@@ -2286,24 +2277,14 @@ begin
   end;
   FAlsoListed := AlsoMatches(FRoot, FProjectFile, FAlsoPatterns, LNote);
   FAlsoNote := FAlsoNote + LNote;
-  for var LPat in FHostPatterns do
-  begin
-    var LGot := ExpandProjectPattern(FRoot, LPat);
-    if LGot = nil then
-      FAlsoNote := FAlsoNote + Format('"hosts": %s matches no .dproj, .dpr '
-        + 'or .dpk'#13#10, [LPat]);
-    for var LF in LGot do
-      if IndexText(LF, FHosts) < 0 then
-        FHosts := FHosts + [LF];
-  end;
   Log('%s: %d project(s) from [%s]%s', [FAlsoFile, Length(FAlsoListed),
     string.Join(', ', FAlsoPatterns), IfThen(FAlsoNote <> '', ' - ' +
     FAlsoNote.Replace(#13#10, '; ').TrimRight([' ', ';']), '')]);
 end;
 
-function TMcpWorkspace.HasLibrary: Boolean;
+function TMcpWorkspace.HasExportPatterns: Boolean;
 begin
-  Result := FExportPackages or (FExportPatterns <> nil) or (FHosts <> nil);
+  Result := FExportPatterns <> nil;
 end;
 
 // A pattern relative to the group directory, `/` or `\`, a `*` matching
@@ -2319,96 +2300,6 @@ begin
       PathDelim)));
     if MatchesMask(APath, LPat) then
       Exit(True);
-  end;
-end;
-
-function TMcpWorkspace.HostSources(out ACut: Boolean): TArray<string>;
-const
-  WALK_MS = 2000;
-var
-  LDirs, LLines, LSegs: TArray<string>;
-  LSeen: TDictionary<string, Boolean>;
-  LSW: TStopwatch;
-  LFull: string;
-
-  function IsSource(const AName: string): Boolean;
-  begin
-    Result := MatchText(TPath.GetExtension(AName), ['.pas', '.dpr', '.dpk',
-      '.inc']);
-  end;
-
-  // As UnindexedSources skips them: a worktree under .claude holds a copy
-  // of every unit.
-  function SkippedDir(const AName: string): Boolean;
-  begin
-    Result := StartsStr('.', AName) or SameText(AName, '__history') or
-      SameText(AName, '__recovery');
-  end;
-
-  procedure Take(const APath: string);
-  begin
-    if not StartsText(IncludeTrailingPathDelimiter(FRoot), APath) and
-       LSeen.TryAdd(LowerCase(APath), True) then
-      Result := Result + [APath];
-  end;
-
-  procedure Walk(const ADir: string);
-  var
-    LSr: TSearchRec;
-  begin
-    if FindFirst(TPath.Combine(ADir, '*'), faAnyFile, LSr) <> 0 then
-      Exit;
-    try
-      repeat
-        if LSW.ElapsedMilliseconds > WALK_MS then
-        begin
-          ACut := True;
-          Break;
-        end;
-        if (LSr.Name = '.') or (LSr.Name = '..') then
-          Continue;
-        if LSr.Attr and faDirectory <> 0 then
-        begin
-          if not SkippedDir(LSr.Name) then
-            Walk(TPath.Combine(ADir, LSr.Name));
-        end
-        else if IsSource(LSr.Name) then
-          Take(TPath.Combine(ADir, LSr.Name));
-      until FindNext(LSr) <> 0;
-    finally
-      System.SysUtils.FindClose(LSr);
-    end;
-  end;
-
-begin
-  Result := nil;
-  ACut := False;
-  LDirs := nil;
-  for var LH in FHosts do
-    AddUnique(LDirs, [ExtractFileDir(LH)]);
-  LSW := TStopwatch.StartNew;
-  LSeen := TDictionary<string, Boolean>.Create;
-  try
-    for var LDir in LDirs do
-      if RunGit(LDir, 'ls-files -co --exclude-standard', LLines) then
-      begin
-        for var LLine in LLines do
-        begin
-          LSegs := LLine.Split(['/']);
-          if (Length(LSegs) = 0) or not IsSource(LSegs[High(LSegs)]) then
-            Continue;
-          var LSkip := False;
-          for var LIdx := 0 to High(LSegs) - 1 do
-            LSkip := LSkip or SkippedDir(LSegs[LIdx]);
-          LFull := TPath.Combine(LDir, string.Join(PathDelim, LSegs));
-          if not LSkip and TFile.Exists(LFull) then
-            Take(LFull);
-        end;
-      end
-      else
-        Walk(LDir);
-  finally
-    LSeen.Free;
   end;
 end;
 
@@ -2788,16 +2679,14 @@ begin
           IfThen(Length(FAlsoListed) > LN, Format(', %d in the group already',
           [Length(FAlsoListed) - LN]), ''),
           IfThen(FAlsoLike <> '', ', "like" ' + FAlsoLike, '')]));
-        if FExportPackages or (FExportPatterns <> nil) then
-          LSb.AppendLine(Format('  "exported": %s - lint unused-symbol says a '
-            + 'library unit''s interface rows are exported', [IfThen(
-            FExportPackages, 'the packages'' units', '') + IfThen(
-            FExportPackages and (FExportPatterns <> nil), ' and ', '') +
-            string.Join(', ', FExportPatterns)]));
-        if FHostPatterns <> nil then
-          LSb.AppendLine(Format('  "hosts": [%s] - %d program(s) whose uses '
-            + 'of the library count (word matches)', [string.Join(', ',
-            FHostPatterns), Length(FHosts)]));
+        if FExportPatterns <> nil then
+          LSb.AppendLine(Format('  "exported": [%s] - lint unused-symbol takes '
+            + 'these units'' interface as used (a program outside the group '
+            + 'may call it)', [string.Join(', ',
+            FExportPatterns)]));
+        if FPackagesInternal then
+          LSb.AppendLine('  "exported": false - lint unused-symbol weighs a '
+            + 'package''s units as an application''s');
         for var LLine in FAlsoNote.TrimRight.Split([#13#10]) do
           if LLine <> '' then
             LSb.AppendLine('  ' + LLine);
