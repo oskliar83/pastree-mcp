@@ -1073,6 +1073,38 @@ gap between the answers and the truth.
    - `unused-uses` - a unit in `uses` none of whose names are used.
      Removing it takes a .dcu dcc loads for nothing out of every build of
      the importer, and an edge out of the `uses` graph and its cycles.
+
+     Needed only by unused declarations (0.61.0, PasTree 0.206.0's
+     `loAfterRows`): an entry every use of which sits in unused-symbol rows
+     of its unit - their declarations, bodies, the members and method bodies
+     of a row type - is a row too, "X - needed only by unused WriteDisk - it
+     goes with it, not alone". Replaying an agent's session found the case:
+     lint named the dead `WriteDisk`, the agent deleted it and then found by
+     hand that `PasLsp.SourceText` went with it. The entry is used today, so
+     the rule saw nothing. Such a row is judged in every analysis holding the
+     unit (PasTree's rule asked with the option; in each, the entry is only
+     so or not used at all), carries the doubts of an unused entry - but the
+     overload doubt leaves out the calls the rows make, they go too - and
+     the doubt of a row it goes with that has one. It is never removed
+     alone: removed first, its rows no longer compile. `apply` leaves it and
+     says how many it left, the rows weighed together take it as kept, and
+     the header counts it ("unused-uses: N needed only by unused
+     declarations"). The cost is the declaration search, so these rows come
+     only where it is wanted anyway: unused-symbol in `rules` (its search
+     runs first and each analysis' rows - not exported ones - are reused,
+     placed on the navigator if they still name their declarations, else
+     PasTree searches again) or `after_rows: true`. Run with every
+     unused-uses lint it took the client group's whole-group lint from 30 s
+     to 70 s on the first call (2.0 s to 6.4 s again), one unit's from 13 s
+     to 25 s (1.5 s to 2.1 s again) - paid by every session asking for
+     unused-uses; plain unused-uses costs what it did (28 s, 1.9 s again).
+     Asked with unused-symbol it adds little: both rules 65 s (11 s again),
+     unused-symbol alone 46 s (9 s). It found 214 such
+     rows beside the 13,992 it had (those unchanged), 47 of them with a
+     `but` - mostly the doubt of a declaration they go with. Three sure ones
+     checked with dcc - each entry removed with its declarations (an unused
+     overload pair, a disk-space helper, an unused form method) -
+     and the three members compiling them built with no new warning.
    - `uses-to-implementation` - an interface `uses` entry whose names are
      used only in the implementation. Moved, the unit can sit on a cycle
      (dcc refuses one through interfaces alone, F2047), and the interface

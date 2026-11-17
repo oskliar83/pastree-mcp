@@ -1354,6 +1354,39 @@ Check 'lint apply' $lintParts[1] @('4 findings in 1 file of 1 own unit: unused-u
 Check 'lint applied' $lintParts[2] @('2 findings in 1 file of 1 own unit: unused-uses 2 - 2 with a "but"', 'unused-uses uLintInit', 'unused-uses uBoxes') @('uColors', 'uCells')
 Check 'lint applied text' $lintAfter @("uses`r`n  System.SysUtils,`r`n  System.Classes,`r`n  uLintInit,`r`n  uLintHelp,`r`n  uLintBase;`r`n", "uses`r`n  uLintMore,`r`n  uFlags,`r`n  uBoxes,`r`n  uLintAlias;`r`n")
 
+# ---- lint: a uses entry needed only by unused declarations -------------------------
+# tests\fixtures\extra\AppU, a copy: uAfter lists uDisk only for WriteDisk,
+# which nothing calls - the row names it and `apply` leaves it (removed
+# before WriteDisk, WriteDisk no longer compiles); uPlain, used by nothing,
+# is removed. uKeep calls DiskWrite: the empty case. Asked for with
+# `after_rows` or with unused-symbol in `rules` (its rows reused); plain
+# unused-uses lists no such row - it costs and answers as before 0.61.0.
+Write-Host '--- CLI, lint: an entry going with unused declarations'
+$afterCopy = Join-Path ([IO.Path]::GetTempPath()) ('pastree-mcp-smoke-after-' + [Guid]::NewGuid().ToString('N'))
+$afterCalls = $afterCopy + '.calls'
+Copy-Item -Recurse (Join-Path $here 'fixtures\extra\AppU') $afterCopy
+try {
+    [IO.File]::WriteAllText($afterCalls, "lint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"file`":`"uKeep.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`nlint {`"rules`":`"unused-uses`",`"limit`":0,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses,unused-symbol`"}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`"}`nlint {`"rules`":`"unused-symbol`",`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"apply`":true,`"after_rows`":true}`nlint {`"file`":`"uAfter.pas`",`"rules`":`"unused-uses`",`"after_rows`":true}`n")
+    $ErrorActionPreference = 'Continue'
+    try { $afterOut = (& $Exe --project (Join-Path $afterCopy 'AppU.dpr') --log none --script $afterCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
+    finally { $ErrorActionPreference = 'Stop' }
+    $afterText = [IO.File]::ReadAllText((Join-Path $afterCopy 'uAfter.pas'))
+}
+finally {
+    Remove-Item -Recurse -Force $afterCopy -ErrorAction SilentlyContinue
+    Remove-Item -Force $afterCalls -ErrorAction SilentlyContinue
+}
+$afterParts = $afterOut -split '(?m)^=== '
+Check 'lint after rows' $afterParts[1] @('2 findings in 1 file of 1 own unit: unused-uses 2', 'unused-uses: 1 needed only by unused declarations - each goes with the ones it names, not alone (`apply` leaves it)', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk - it goes with it, not alone', 'uAfter.pas:11:3: unused-uses uPlain - no name of it is used here') @('but')
+Check 'lint after rows empty' $afterParts[2] @('no findings (unused-uses) in uKeep.pas')
+Check 'lint after rows count' $afterParts[3] @('2 findings in 1 file of 4 own units: unused-uses 2', 'unused-uses: 1 needed only by unused declarations') @('uAfter.pas:')
+Check 'lint after rows with unused-symbol' $afterParts[4] @('3 findings in 1 file of 1 own unit: unused-uses 2, unused-symbol 1', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk - it goes with it, not alone', 'uAfter.pas:13:11: unused-symbol WriteDisk (procedure) - nothing in the group uses it')
+Check 'lint after rows plain' $afterParts[5] @('1 finding in 1 file of 1 own unit: unused-uses 1', 'uAfter.pas:11:3: unused-uses uPlain - no name of it is used here') @('needed only', 'uDisk')
+Check 'lint after rows needs the rule' $afterParts[6] @('`after_rows` adds to the unused-uses rows the entries needed only by unused declarations - add unused-uses to `rules`')
+Check 'lint after rows apply' $afterParts[7] @('apply: 1 `uses` entry removed from 1 file - the next call reads them again; run `compile`; 1 row needed only by unused declarations left - each goes with the declarations it names, removed by hand')
+Check 'lint after rows applied' $afterParts[8] @('1 finding in 1 file of 1 own unit: unused-uses 1', 'uAfter.pas:10:3: unused-uses uDisk - needed only by unused WriteDisk') @('uPlain')
+Check 'lint after rows applied text' $afterText @("uses`r`n  uDisk;`r`n")
+
 # ---- format: every style field taken -----------------------------------------------
 # The fields come from TPasFormatOptions through RTTI; the refusal of an
 # unknown one lists them all with their defaults. Each passed back by name at

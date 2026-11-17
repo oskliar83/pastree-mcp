@@ -16,7 +16,9 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.60.0';
+  PasTreeMcpVersion = '0.61.0';
+  // 0.206.0: FindUnusedUses' loAfterRows and TPasUnusedUse.By (lint's
+  // unused-uses rows needed only by unused declarations).
   // 0.205.0: a library's exported declarations (TPasUnusedLibrary, the
   // Api of a row; lint's "exported" and "hosts").
   // 0.204.0: an interface's members weighed (a dispinterface's not:
@@ -73,7 +75,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.205.0';
+  cMinPasTreeVersion = '0.206.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.

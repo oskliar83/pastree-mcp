@@ -13417,6 +13417,10 @@ type
     Conds: string;             // the conditional blocks it is written in
     ShadowCount: Integer;
     Edges: TArray<TLintEdge>;  // the `uses` edge it is, per analysis
+    // Used only inside unused declarations of the unit (PasTree's
+    // loAfterRows, in every analysis holding it): their names - the entry
+    // goes with them. nil otherwise.
+    By: TArray<string>;
   end;
 
   TLintPlace = record
@@ -13441,6 +13445,9 @@ type
     // said once (AppendButRows); '' with none. The uses rules keep theirs
     // in Text.
     But: string;
+    // unused-uses: the unused declarations the entry is needed only by -
+    // it goes with them, never alone (`apply` leaves it). nil otherwise.
+    By: TArray<string>;
   end;
 
   // What lint reads of one analysis more than once: the interface names of
@@ -13475,6 +13482,9 @@ type
     // PasTree's doubts on an entry it finds unused that come from a library
     // unit read interface-only (light mode), file|name lower -> doubts.
     FTreeLight: TDictionary<string, TArray<string>>;
+    // PasTree's rows of entries needed only by unused declarations
+    // (loAfterRows), file|name lower -> the row.
+    FTreeAfter: TDictionary<string, TPasUnusedUse>;
     procedure BuildGraph;
     function ReachOf(ARoot, ASkipFrom, ASkipTo: Integer;
       AAlso: TDictionary<Int64, Boolean>): TArray<Boolean>;
@@ -13519,6 +13529,21 @@ type
     // interface-only (light mode) - a unit the workspace could not make
     // full: nil when none.
     function TreeLightDoubts(const AFile, AName: string): TArray<string>;
+    // AfterRows (set before the first AskTree): PasTree's rule asked with
+    // loAfterRows - it searches the unused declarations of the files too,
+    // and TreeAfter answers whether AFile's entry AName is needed only by
+    // them here (ARow: PasTree's row, its By and doubts).
+    function TreeAfter(const AFile, AName: string;
+      out ARow: TPasUnusedUse): Boolean;
+    var AfterRows: Boolean;
+    // The unused declarations this analysis' unused-symbol search found
+    // (its rows and the members of row types, not exported ones), when the
+    // lint ran it before AskTree: reused instead of a second search.
+    var SymbolRows: TArray<TPasUnusedSymbol>;
+    var HasSymbolRows: Boolean;
+    // The workspace generation the rows were found in: their model ids and
+    // symbols hold in it alone - a promotion or a rebuild makes another.
+    var SymbolGen: Integer;
     // The units with an effect AStart reaches through the units in ALost,
     // 'Name (initialization)'.
     function EffectsFrom(AStart: Integer;
@@ -13686,6 +13711,7 @@ begin
   FNLPaths.Free;
   FNLNodes.Free;
   FLightAsked.Free;
+  FTreeAfter.Free;
   FTreeLight.Free;
   FTreeUnused.Free;
   FUncertain.Free;
@@ -13885,10 +13911,61 @@ begin
   // Through the workspace: in light mode the library units the rule reads
   // (inline bodies, initializations) made full first (PasTree's lint
   // demand) - the tool then runs again over them.
-  LUnused := FA.WS.FindUnusedUses(LFiles);
-  FWs.QueryDone(FA);
+  // Each workspace query's status is its own: QueryDone after each, before
+  // the next overwrites it - a change left unsynced leaves the analysis on
+  // a freed project (the next call's access violation, on the client group).
+  if AfterRows and not HasSymbolRows then
+  begin
+    LUnused := FA.WS.FindUnusedUses(LFiles, [loAfterRows]);
+    FWs.QueryDone(FA);
+  end
+  else
+  begin
+    LUnused := FA.WS.FindUnusedUses(LFiles);
+    FWs.QueryDone(FA);
+    // The unused-symbol search ran already (`rules` has it): its rows
+    // placed here, when no query since made another navigator (a library
+    // unit made full renumbers what the rows name: then PasTree searches
+    // again).
+    if AfterRows then
+    begin
+      var LNav := FA.WS.Nav;
+      var LAfter: TArray<TPasUnusedUse>;
+      if SymbolGen = FA.WS.Generation then
+      begin
+        var LMids: TArray<Integer> := nil;
+        for var LF in LFiles do
+          if LNav.ModelIdOf(LF) >= 0 then
+            LMids := LMids + [LNav.ModelIdOf(LF)];
+        // The light units this second walk could not read are the first
+        // call's to report: its count stands.
+        var LNotSearched := LNav.NotSearched;
+        LAfter := PasTree.Sema.Lint.FindUnusedUses(LNav, LMids, [loAfterRows],
+          SymbolRows);
+        LNav.NotSearched := LNotSearched;
+      end
+      else
+      begin
+        LAfter := FA.WS.FindUnusedUses(LFiles, [loAfterRows]);
+        FWs.QueryDone(FA);
+      end;
+      for var LU in LAfter do
+        if LU.By <> nil then
+          LUnused := LUnused + [LU];
+    end;
+  end;
   for var LU in LUnused do
   begin
+    // An entry needed only by unused declarations is used here, as this
+    // lint's walk finds it: kept apart (TreeAfter), not taken as unused.
+    if LU.By <> nil then
+    begin
+      if FTreeAfter = nil then
+        FTreeAfter := TDictionary<string, TPasUnusedUse>.Create;
+      FTreeAfter.AddOrSetValue(LowerCase(LU.Hit.FilePath + '|' +
+        LU.UnitName), LU);
+      Continue;
+    end;
     FTreeUnused.AddOrSetValue(LowerCase(LU.Hit.FilePath + '|' +
       LU.UnitName), True);
     // Its doubts of what a light unit hides (PasTree.Sema.Lint words them
@@ -14033,6 +14110,14 @@ begin
   Result := nil;
   if FTreeLight <> nil then
     FTreeLight.TryGetValue(LowerCase(AFile + '|' + AName), Result);
+end;
+
+function TLintAnalysis.TreeAfter(const AFile, AName: string;
+  out ARow: TPasUnusedUse): Boolean;
+begin
+  AskTree([AFile]);
+  Result := (FTreeAfter <> nil) and FTreeAfter.TryGetValue(LowerCase(AFile +
+    '|' + AName), ARow);
 end;
 
 function TLintAnalysis.TreeSaysUnused(const AFile, AName: string): Boolean;
@@ -14691,6 +14776,57 @@ begin
             Break;
           end;
       end;
+    // An entry used only inside unused declarations of the unit (PasTree's
+    // loAfterRows, LL.AfterRows) in an analysis, and in every other one
+    // holding it so or not at all, goes with them: unused once they go. Its
+    // row names them; the overload doubt is PasTree's, which leaves out the
+    // calls those declarations make (they go too), and so is the doubt of a
+    // declaration of them that has one.
+    if ATree then
+      for LE := 0 to LEntries.Count - 1 do
+      begin
+        LEntry := LEntries[LE];
+        if not LEntry.Used or (LEntry.Edges = nil) then
+          Continue;
+        var LAfter := False;
+        var LBy: TArray<string> := nil;
+        var LTreeDoubts: TArray<string> := nil;
+        for var LEd in LEntry.Edges do
+        begin
+          var LTreeRow: TPasUnusedUse;
+          if not ALints[LEd.A].AfterRows then
+          begin
+            LAfter := False;
+            Break;
+          end;
+          if ALints[LEd.A].TreeAfter(AFile, LEntry.Name, LTreeRow) then
+          begin
+            LAfter := True;
+            for var LB in LTreeRow.By do
+              if not MatchText(LB, LBy) then
+                LBy := LBy + [LB];
+            for var LD in LTreeRow.Doubts do
+              if (ContainsText(LD, ', which needs it, has a doubt') or
+                 StartsText('it declares an overload of', LD)) and
+                 not MatchText(LD, LTreeDoubts) then
+                LTreeDoubts := LTreeDoubts + [LD];
+          end
+          else if not ALints[LEd.A].TreeSaysUnused(AFile, LEntry.Name) then
+          begin
+            LAfter := False;
+            Break;
+          end;
+        end;
+        if not LAfter then
+          Continue;
+        TArray.Sort<string>(LBy, TIStringComparer.Ordinal);
+        LEntry.Used := False;
+        LEntry.UsedInInterface := False;
+        LEntry.By := LBy;
+        LEntries[LE] := LEntry;
+        for var LD in LTreeDoubts do
+          AddDoubt(LE, LD);
+      end;
     // Light mode: what PasTree's rule could not know of a library unit read
     // interface-only - an inline routine's expansion - stays on the row.
     for var LAi := 0 to IfThen(ATree, ALints.Count, 0) - 1 do
@@ -14775,8 +14911,9 @@ begin
           // PasTree's pick may not be its. On the client group
           // `Trim(ShortString)` was bound to SysUtils' Trim, and the AnsiStrings
           // listed beside it said unused - removed, dcc took SysUtils' Trim
-          // where it had taken AnsiStrings' (two new W1057).
-          if not LEntry.Used then
+          // where it had taken AnsiStrings' (two new W1057). An entry going
+          // with unused declarations has PasTree's (above).
+          if not LEntry.Used and (LEntry.By = nil) then
           begin
             if LOverCalls = nil then
             begin
@@ -14851,7 +14988,13 @@ begin
       begin
         LRow.Rule := LINT_UNUSED_USES;
         LRow.Entry := LX.Name;
-        LRow.Text := LX.Name + ' - no name of it is used here';
+        LRow.By := LX.By;
+        if LX.By <> nil then
+          LRow.Text := Format('%s - needed only by unused %s - it goes with %s, '
+            + 'not alone', [LX.Name, NamedList(LX.By, MAX_LINT_NAMED),
+            IfThen(Length(LX.By) = 1, 'it', 'them')])
+        else
+          LRow.Text := LX.Name + ' - no name of it is used here';
         if Length(LX.Drops) > 0 then
           LRow.Text := LRow.Text + Format('; but removing it leaves %s out '
             + 'of %s', [NamedList(LX.Drops,
@@ -14919,8 +15062,9 @@ begin
   SetLength(LTogether, ARows.Count);
   for var LR := 0 to ARows.Count - 1 do
   begin
+    // A row going with unused declarations is not removed alone.
     LTogether[LR].Held := (ARows[LR].Rule <> LINT_UNUSED_USES) or
-      ARows[LR].Doubt;
+      ARows[LR].Doubt or (ARows[LR].By <> nil);
     for var LE in ARows[LR].Edges do
     begin
       LEdge.Graph := LE.A;
@@ -15413,9 +15557,12 @@ begin
       + 'host may use it', [ALib.Searched, ALib.HostCount]);
 end;
 
+// ALints (nil: none): each analysis' own rows - not exported ones, whose
+// uses a program outside may need - kept on its TLintAnalysis for the
+// unused-uses rows they free (SymbolRows).
 procedure LintUnusedSymbols(AWs: TMcpWorkspace; const AFiles: TArray<string>;
   ARows: TList<TLintRow>; out ASkipped: string; out AInRow: Integer;
-  out AFoot: string);
+  out AFoot: string; ALints: TObjectList<TLintAnalysis> = nil);
 var
   LAsks: TArray<TOutsideAsk>;
   LAskRow: TArray<Integer>;
@@ -15480,6 +15627,17 @@ begin
       LRes := LA.WS.FindUnusedSymbols(LFiles, LLib.Lib, LLib.Exported, LSkips,
         LInRow);
       AWs.QueryDone(LA);
+      if ALints <> nil then
+        for var LL in ALints do
+          if LL.A = LA then
+          begin
+            LL.SymbolRows := nil;
+            for var LSym in LRes + LInRow do
+              if LSym.Api = uaNone then
+                LL.SymbolRows := LL.SymbolRows + [LSym];
+            LL.HasSymbolRows := True;
+            LL.SymbolGen := LA.WS.Generation;
+          end;
       for var LW := Low(TPasUnusedSkip) to High(TPasUnusedSkip) do
         LMax[LW] := Max(LMax[LW], LSkips[LW]);
       for LS in LInRow do
@@ -16174,10 +16332,11 @@ var
   LByFile: TDictionary<string, TArray<string>>;
   LPathOf: TDictionary<string, string>;
   LKeys, LNames, LRefused, LMissing, LNotes: TArray<string>;
-  LFile, LHow, LText, LNew: string;
+  LFile, LHow, LText, LNew, LKept: string;
   LBytes: TBytes;
   LTree: TPasTree;
   LFound: Boolean;
+  LAfter: Integer;
   LRemovals: TArray<TPasUsesRemoval>;
   LEdits: TPasTextEdits;
   LEdit: TPasTextEdit;
@@ -16186,8 +16345,14 @@ begin
   LByFile := TDictionary<string, TArray<string>>.Create;
   LPathOf := TDictionary<string, string>.Create;
   try
+    LAfter := 0;
     for var LRow in ARows do
+      // A row needed by unused declarations goes with them: removed before
+      // them, they no longer compile.
       if (LRow.Rule = LINT_UNUSED_USES) and not LRow.Doubt and
+         (LRow.By <> nil) then
+        Inc(LAfter)
+      else if (LRow.Rule = LINT_UNUSED_USES) and not LRow.Doubt and
          (LRow.Entry <> '') then
       begin
         if not LByFile.TryGetValue(LowerCase(LRow.FilePath), LNames) then
@@ -16195,8 +16360,14 @@ begin
         LByFile.AddOrSetValue(LowerCase(LRow.FilePath), LNames + [LRow.Entry]);
         LPathOf.AddOrSetValue(LowerCase(LRow.FilePath), LRow.FilePath);
       end;
+    LKept := '';
+    if LAfter > 0 then
+      LKept := Format('%s needed only by unused declarations left - each '
+        + 'goes with the declarations it names, removed by hand', [Plural(
+        LAfter, 'row')]);
     if LByFile.Count = 0 then
-      Exit('apply: no unused-uses row without a "but" - nothing written');
+      Exit('apply: no unused-uses row without a "but" - nothing written' +
+        IfThen(LKept <> '', '; ' + LKept));
     LKeys := LByFile.Keys.ToArray;
     TArray.Sort<string>(LKeys, TStringComparer.Ordinal);
     LRemoved := 0;
@@ -16264,6 +16435,8 @@ begin
     Result := Format('apply: %d `uses` %s removed from %s - the next call '
       + 'reads them again; run `compile`', [LRemoved, IfThen(LRemoved = 1,
       'entry', 'entries'), Plural(LFiles, 'file')]);
+    if LKept <> '' then
+      Result := Result + '; ' + LKept;
     for var LNote in LNotes do
       Result := Result + sLineBreak + '  ' + LNote;
   finally
@@ -16277,7 +16450,7 @@ var
   LRules, LAskedFiles: TArray<string>;
   LFile, LIn, LKey, LNotHeld: string;
   LLimit, LShown, LDoubts, LN, LAsked: Integer;
-  LUnused, LMove, LSymbols, LSure, LUnref, LApply: Boolean;
+  LUnused, LMove, LSymbols, LSure, LUnref, LApply, LAfterRows: Boolean;
   LKinds: TArray<string>;
   LSkipped, LApplied, LFoot: string;
   LLines, LButs: TArray<string>;
@@ -16331,6 +16504,11 @@ begin
   LSymbols := MatchText(LINT_UNUSED_SYMBOL, LRules);
   LUnref := MatchText(LINT_UNREFERENCED, LRules);
   LApply := ArgBool(AArgs, 'apply', False);
+  LAfterRows := ArgBool(AArgs, 'after_rows', False);
+  if LAfterRows and not LUnused then
+    raise EToolError.Create('`after_rows` adds to the unused-uses rows the '
+      + 'entries needed only by unused declarations - add unused-uses to '
+      + '`rules`');
   if LApply and not LUnused then
     raise EToolError.Create('`apply` removes the unused-uses rows with no '
       + '"but" - add unused-uses to `rules`');
@@ -16386,8 +16564,22 @@ begin
         ' are not units')
         + ' any analysis holds - lint reads the `uses` of units; a program''s '
         + 'or a package''s lists what it is made of');
+    // unused-uses asks PasTree's rule with the unused declarations too - an
+    // entry needed only by them is a row going with them - when they are
+    // wanted anyway: unused-symbol asked (its search runs first, and its
+    // rows are reused) or `after_rows`. Not otherwise: the search doubles a
+    // whole group's unused-uses (30 s -> 70 s on the client group).
+    LSkipped := '';
+    LInRow := 0;
+    LFoot := '';
+    if LSymbols and LUnused then
+      LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped, LInRow, LFoot,
+        LLints);
     for LL in LLints do
+    begin
+      LL.AfterRows := LUnused and (LSymbols or LAfterRows);
       LL.AskTree(LFiles.ToArray);
+    end;
     for var LF in LFiles do
       LintUses(AWs, LF, LLints, LEnclosing, LUnused, LMove, True, LRows);
     if LUnused then
@@ -16400,10 +16592,7 @@ begin
     end;
     // Light mode: the initializations the rows met unread, read.
     EnsureLintEffects(AWs, LLints);
-    LSkipped := '';
-    LInRow := 0;
-    LFoot := '';
-    if LSymbols then
+    if LSymbols and not LUnused then
       LintUnusedSymbols(AWs, LFiles.ToArray, LRows, LSkipped, LInRow, LFoot);
     if LUnref then
       LintUnreferenced(AWs, LFiles.ToArray, LRows);
@@ -16474,6 +16663,16 @@ begin
         LSb.AppendLine(Format('of them %d used only by unused ones, %d only '
           + 'assigned - removed together with the rows they name', [LByRows,
           LWritten]));
+      // The uses entries the unused declarations alone need.
+      var LUsesBy := 0;
+      for var LRow in LArr do
+        if LRow.By <> nil then
+          Inc(LUsesBy);
+      if LUsesBy > 0 then
+        LSb.AppendLine(Format('unused-uses: %d needed only by unused '
+          + 'declarations - each goes with the ones it names, not alone '
+          + '(`apply` leaves %s)', [LUsesBy, IfThen(LUsesBy = 1, 'it',
+          'them')]));
       // A library (ALSO_FILE_NAME's "exported" / "hosts"): what a program
       // outside the group may use apart from what is the library's own -
       // on PasTree's own group 29 of 90 rows were API its hosts call.
@@ -22341,13 +22540,20 @@ const
     + 'offered). `apply: true` removes every unused-uses row without a '
     + '`but` from its file - the rows are weighed as removed together, one '
     + 'rewrite per clause, the layout kept. Run `compile` after acting on '
-    + 'it.",'
+    + 'it. With unused-symbol in `rules`, or `after_rows`, unused-uses also '
+    + 'lists an entry needed only by unused declarations (needed only by '
+    + 'unused X - it goes with it, not alone), which `apply` leaves.",'
     + '"inputSchema":{"type":"object","properties":{'
     + '"rules":{"type":"string","description":"Comma-separated: '
     + 'unused-uses, uses-to-implementation (the default: both), '
     + 'unused-symbol, unreferenced-units"},'
     + '"apply":{"type":"boolean","description":"Write: take the '
     + 'unused-uses rows with no `but` out of their files (default false)"},'
+    + '"after_rows":{"type":"boolean","description":"unused-uses also lists '
+    + 'the entries needed only by unused declarations - they go with them, '
+    + 'never alone. Costs the unused-declaration search (a whole group: '
+    + 'twice the time); on already with unused-symbol in `rules` (default '
+    + 'false)"},'
     + '"sure":{"type":"boolean","description":"List only the rows with no '
     + '`but` - safe to act on (the header still counts all)"},'
     + '"kinds":{"type":"string","description":"unused-symbol rows only of '
