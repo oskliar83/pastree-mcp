@@ -16,7 +16,9 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.65.1';
+  PasTreeMcpVersion = '0.65.2';
+  // 0.212.2: an interface variable or typed constant of a unit inside a
+  // .dcp is read with its type (__PasTreeUnresolved before).
   // 0.212.1: lint's unused-uses rows with a By no longer raise an access
   // violation when built by dcc 35.0 (an optimizer fault on an inline
   // for-in variable in TUsesLint.CheckUnit).
@@ -89,7 +91,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.212.1';
+  cMinPasTreeVersion = '0.212.2';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.
