@@ -108,6 +108,10 @@ type
     Switches: TArray<string>;
     ConsoleTarget: Boolean;
     Namespaces: TArray<string>;
+    // The packages a package project requires (TPasDProj.Requires): a unit
+    // found only inside one of their .dcp files is read from there, as dcc
+    // reads it - never from a .dcp merely on the path (PasTree SetPackages).
+    Packages: TArray<string>;
     Aliases: TArray<TPasUnitAlias>;
     Files: TArray<string>;   // the .pas files the project lists
     Analysis: Integer;       // index into TMcpWorkspace.Analyses; -1 = failed
@@ -142,6 +146,7 @@ type
     Switches: TArray<string>;   // the creating member's, as Defines
     ConsoleTarget: Boolean;
     Namespaces: TArray<string>;
+    Packages: TArray<string>;   // every member's, as Namespaces
     Aliases: TArray<TPasUnitAlias>;
     Pins: TDictionary<string, string>;   // unit name lower -> file
     ProjectDir: string;
@@ -1265,6 +1270,7 @@ begin
           LM.Switches := LD.Switches;
           LM.ConsoleTarget := LD.ConsoleTarget;
           LM.Namespaces := LD.Namespaces;
+          LM.Packages := LD.Requires;
           LM.Aliases := LD.UnitAliases;
           for var LF in LD.Files do
             if SameText(TPath.GetExtension(LF), '.pas') then
@@ -1325,7 +1331,8 @@ var
       for var LA2 in AM.Aliases do
         LAl := LAl + LowerCase(LA2.Alias + '=' + LA2.UnitName) + ';';
       Result := Result + '|' + SortedLower(AM.Defines) + '|' +
-        LowerCase(string.Join(';', AM.Namespaces)) + '|' + LAl + '|' +
+        LowerCase(string.Join(';', AM.Namespaces)) + '|' +
+        LowerCase(string.Join(';', AM.Packages)) + '|' + LAl + '|' +
         UpperCase(string.Join(' ', AM.Switches)) + '|' +
         BoolToStr(AM.ConsoleTarget, True);
     end;
@@ -1426,6 +1433,7 @@ begin
       FMembers[LIdx].Analysis := LA.Index;
       LA.Roots := LA.Roots + [FMembers[LIdx].MainSource];
       AddUnique(LA.Namespaces, FMembers[LIdx].Namespaces);
+      AddUnique(LA.Packages, FMembers[LIdx].Packages);
       // A listed file that does not exist is not pinned: dcc compiles the unit
       // the search path finds (the client group's server lists one in its
       // .dpr and .dproj and builds), and a pin to it made every importer
@@ -1659,6 +1667,7 @@ begin
       AAnalysis.Defines);
   try
     Result.SetNamespaces(AAnalysis.Namespaces);
+    Result.SetPackages(AAnalysis.Packages);
     for var LAl in AAnalysis.Aliases do
       Result.AddUnitAlias(LAl.Alias, LAl.UnitName);
     Result.SetProjectDir(AAnalysis.ProjectDir);
@@ -1720,6 +1729,7 @@ begin
   try
     // As NewProject configures an analysis.
     LProj.SetNamespaces(LA.Namespaces);
+    LProj.SetPackages(LA.Packages);
     for var LAl in LA.Aliases do
       LProj.AddUnitAlias(LAl.Alias, LAl.UnitName);
     LProj.SetProjectDir(LA.ProjectDir);

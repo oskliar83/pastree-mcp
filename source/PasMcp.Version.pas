@@ -16,7 +16,9 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.64.0';
+  PasTreeMcpVersion = '0.65.0';
+  // 0.212.0: SetPackages - a unit that exists only inside a required
+  // package's .dcp resolves (a compile error without it).
   // 0.210.1: TPasImportGraph (unit_deps `root`), and RootsReaching no longer
   // hands a program the reach of the one walked before it - an older PasTree
   // answers "also taken in by" with programs that do not take the unit in.
@@ -84,7 +86,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.210.1';
+  cMinPasTreeVersion = '0.212.0';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.
