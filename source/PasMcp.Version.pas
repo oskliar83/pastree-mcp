@@ -16,7 +16,10 @@ unit PasMcp.Version;
 interface
 
 const
-  PasTreeMcpVersion = '0.65.0';
+  PasTreeMcpVersion = '0.65.1';
+  // 0.212.1: lint's unused-uses rows with a By no longer raise an access
+  // violation when built by dcc 35.0 (an optimizer fault on an inline
+  // for-in variable in TUsesLint.CheckUnit).
   // 0.212.0: SetPackages - a unit that exists only inside a required
   // package's .dcp resolves (a compile error without it).
   // 0.210.1: TPasImportGraph (unit_deps `root`), and RootsReaching no longer
@@ -86,7 +89,7 @@ const
   // overload (0.121.0). An older PasTree has no workspace (a compile error)
   // or a workspace whose demand misses a family (a silent light gap).
   // 0.117.1 before: light mode, promotion, LintPromotions (0.31.0).
-  cMinPasTreeVersion = '0.212.0';
+  cMinPasTreeVersion = '0.212.1';
 
 // 'pastree-mcp 0.1.0 (PasTree 0.50.1), built 2026-09-25 15:00' - the first
 // line of every log.
