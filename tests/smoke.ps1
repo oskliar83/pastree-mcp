@@ -1409,6 +1409,44 @@ Check 'lint apply unused-symbol' $afterParts[9] @('1 declaration removed from 1 
 Check 'lint after the declaration' $afterParts[10] @('uAfter.pas:10:3: unused-uses uDisk - no name of it is used here') @('needed only')
 Check 'lint after rows applied text' $afterText @("uses`r`n  uDisk;`r`n", "implementation`r`n`r`nuses`r`n  uDisk;`r`n`r`nprocedure RunAfter;") @('WriteDisk')
 
+# ---- lint: locals, a record's fields folded, `diff` (0.66.0) ------------------------
+# tests\fixtures\extra\AppDead, a copy: Update's nested DayMinutes is dead and
+# so is CPerDay, which only it reads; CTolerance, TPair and the string LText
+# are never named (dcc hints none of them). TOldLayout's three unused fields
+# are one line unless `kinds` names field. The diff is the change that left
+# DayMinutes dead (its call replaced): it lists DayMinutes and CPerDay alone,
+# not what was unused before it; a diff that only reflows a line lists
+# nothing (the empty case). `apply` with it removes those two.
+Write-Host '--- CLI, lint: locals, folded fields, diff'
+$deadCopy = Join-Path ([IO.Path]::GetTempPath()) ('pastree-mcp-smoke-dead-' + [Guid]::NewGuid().ToString('N'))
+$deadCalls = $deadCopy + '.calls'
+Copy-Item -Recurse (Join-Path $here 'fixtures\extra\AppDead') $deadCopy
+$deadDiff = 'diff --git a/uDead.pas b/uDead.pas\n--- a/uDead.pas\n+++ b/uDead.pas\n@@ -34,3 +34,3 @@ begin\n begin\n-  LHits := DayMinutes(CUsed);\n+  LHits := CUsed;\n   ALayout.Size := LHits;\n'
+$reflowDiff = 'diff --git a/uDead.pas b/uDead.pas\n--- a/uDead.pas\n+++ b/uDead.pas\n@@ -35,2 +35,2 @@ begin\n-  LHits:=CUsed;\n+  LHits := CUsed;\n   ALayout.Size := LHits;\n'
+$noneDiff = 'diff --git a/Nowhere.pas b/Nowhere.pas\n--- a/Nowhere.pas\n+++ b/Nowhere.pas\n@@ -1 +1 @@\n-x\n+y\n'
+try {
+    [IO.File]::WriteAllText($deadCalls, "lint {`"rules`":`"unused-symbol`"}`nlint {`"rules`":`"unused-symbol`",`"kinds`":`"field`"}`nlint {`"rules`":`"unused-symbol`",`"kinds`":`"locals`"}`nlint {`"symbol`":`"CPerDay`",`"file`":`"uDead.pas`"}`nlint {`"diff`":`"$deadDiff`"}`nlint {`"diff`":`"$reflowDiff`"}`nlint {`"diff`":`"$deadDiff`",`"symbol`":`"Update`"}`nlint {`"diff`":`"$noneDiff`"}`nlint {`"diff`":`"$deadDiff`",`"rules`":`"unused-symbol`",`"apply`":true}`n")
+    $ErrorActionPreference = 'Continue'
+    try { $deadOut = (& $Exe --project (Join-Path $deadCopy 'AppDead.dpr') --log none --script $deadCalls 2>$null | ForEach-Object { "$_" }) -join "`n" }
+    finally { $ErrorActionPreference = 'Stop' }
+    $deadText = [IO.File]::ReadAllText((Join-Path $deadCopy 'uDead.pas'))
+}
+finally {
+    Remove-Item -Recurse -Force $deadCopy -ErrorAction SilentlyContinue
+    Remove-Item -Force $deadCalls -ErrorAction SilentlyContinue
+}
+$deadParts = $deadOut -split '(?m)^=== '
+Check 'lint locals' $deadParts[1] @('8 findings in 1 file of 1 own unit: unused-symbol 8 - 3 with a "but"', 'unused-symbol by kind: type 1, routine 1, var 1, const 2, field 3, local 4', 'uDead.pas:20:3: unused-symbol Update.CPerDay (local const) - used only by unused DayMinutes - it goes with it', 'uDead.pas:21:3: unused-symbol Update.CTolerance (local const) - nothing in the group uses it', 'uDead.pas:24:3: unused-symbol Update.TPair (local record) - nothing in the group uses it', 'uDead.pas:26:3: unused-symbol Update.LText (local var) - nothing in the group uses it', 'uDead.pas:29:12: unused-symbol DayMinutes (function) - nothing in the group uses it', 'uDead.pas:7:5: unused-symbol TOldLayout - 3 of its fields: Head, Name, Pad (`kinds`: field lists each), but a record''s field') @('CUsed', 'LHits', 'TOldLayout.Size', 'TOldLayout.Head (field)')
+Check 'lint fields listed' $deadParts[2] @('listed: 3 of them - unused-symbol of kind field', 'uDead.pas:7:5: unused-symbol TOldLayout.Head (field) - nothing in the group uses it, but [1]', 'uDead.pas:10:5: unused-symbol TOldLayout.Pad (field)') @('of its fields', 'Update.')
+Check 'lint kinds local' $deadParts[3] @('listed: 4 of them - unused-symbol of kind local', 'Update.CPerDay (local const)', 'Update.LText (local var)') @('DayMinutes (function)', 'TOldLayout')
+Check 'lint symbol local' $deadParts[4] @('uDead.pas:20:3: unused Update.CPerDay (local const) - used only by unused DayMinutes - it goes with it')
+Check 'lint diff' $deadParts[5] @('diff: 1 file, 2 changed lines of code, 1 name it removes more often than it adds - the rows its added lines declare, what its removals left unused, and what goes with them: 2 of the 8 rows of the units checked', 'uDead.pas:20:3: unused-symbol Update.CPerDay (local const) - used only by unused DayMinutes', 'uDead.pas:29:12: unused-symbol DayMinutes (function)') @('CTolerance', 'TPair', 'LText', 'TOldLayout')
+Check 'lint diff empty' $deadParts[6] @('diff: 1 file, 2 changed lines of code, 0 names it removes more often than it adds', '0 of the 8 rows of the units checked', 'no findings (unused-uses, unused-symbol) in uDead.pas')
+Check 'lint diff with symbol' $deadParts[7] @('`diff` narrows the rows of the units it changes - with `symbol` each declaration named answers; give one or the other')
+Check 'lint diff no unit' $deadParts[8] @('the diff changes no unit any analysis holds')
+Check 'lint diff apply' $deadParts[9] @('2 declarations removed from 1 file, with what goes with them')
+Check 'lint diff applied text' $deadText @("const`r`n  CTolerance = 5;`r`n  CUsed = 2;`r`ntype", "  LHits: Integer;`r`n`r`nbegin") @('DayMinutes', 'CPerDay')
+
 # ---- lint: a package's exported declarations ----------------------------------------
 # tests\fixtures\extra\PkgE, a copy: a package's interface is exported by
 # default (PasTree 0.207.0) - TPkgApi, its public Run and PkgCall are used,

@@ -702,6 +702,17 @@ begin
   end;
 end;
 
+// A routine's local: a var, const or type of a body or an inline one - no
+// other unit can name it.
+function IsLocalDecl(LM: TPasSemaModel; ASym: Integer): Boolean;
+begin
+  Result := (ASym >= 0) and (ASym < LM.SymCount) and
+    (LM.Symbols[ASym].Kind in [skVar, skConst, skType]) and
+    (LM.Symbols[ASym].Scope >= 0) and
+    (LM.Symbols[ASym].Scope < LM.Scopes.Count) and
+    (LM.Scopes[LM.Symbols[ASym].Scope].Kind in [sckRoutine, sckBlock]);
+end;
+
 function KindMatches(LM: TPasSemaModel; ASym: Integer;
   const AKind: string): Boolean;
 begin
@@ -13731,6 +13742,7 @@ type
     // unused-symbol: what the declaration is, as `kinds` names it (type,
     // routine, var, const, field, property); '' for the uses rules.
     Kind: string;
+    Local: Boolean;            // unused-symbol: a routine's var, const, type
     How: TPasUnusedHow;        // unused-symbol: why a row is one
     Entry: string;             // unused-uses: the entry's name, as written
     // unused-symbol: the `but`, apart from Text - a `but` many rows share is
@@ -15829,8 +15841,12 @@ begin
       // A member of a type that is a row itself is no row (PasTree 0.201.0):
       // in this analysis it is unused all the same, and counts so - a row of
       // the group where another analysis uses its type and not it.
-      LRes := LA.WS.FindUnusedSymbols(LFiles, LLib.Lib, LLib.Exported, LSkips,
-        LInRow);
+      // Locals too (PasTree 0.213.0): dcc hints none of a constant, a type,
+      // a managed variable or one only a dead nested routine reads - a
+      // client session removed four such constants by eye after this rule
+      // listed the dead routines around them.
+      LRes := LA.WS.FindUnusedSymbols(LFiles, [uoLocals], LLib.Lib,
+        LLib.Exported, LSkips, LInRow);
       AWs.QueryDone(LA);
       if ALints <> nil then
         for var LL in ALints do
@@ -15887,8 +15903,11 @@ begin
       LRow.Line := LS.Line;
       LRow.Col := LS.Col;
       LRow.Rule := LINT_UNUSED_SYMBOL;
-      LRow.Text := Format('%s (%s) - %s', [LS.Name,
-        HeadOf(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym), UnusedWhy(LS)]);
+      LRow.Local := IsLocalDecl(LFirstA[LP.Key].Proj.Model(LS.UnitId),
+        LS.Sym);
+      LRow.Text := Format('%s (%s%s) - %s', [LS.Name, IfThen(LRow.Local,
+        'local '), HeadOf(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym),
+        UnusedWhy(LS)]);
       LRow.But := UnusedBut(LS);
       LRow.Doubt := LS.Doubts <> nil;
       LRow.How := LS.How;
@@ -15896,7 +15915,8 @@ begin
       // Asked outside the index: a unit's declaration (a program's no other
       // file can use).
       LModel := LFirstA[LP.Key].Proj.ModelFile(LS.UnitId);
-      if SameText(ExtractFileExt(LModel), '.pas') then
+      if SameText(ExtractFileExt(LModel), '.pas') and
+         not IsLocalDecl(LFirstA[LP.Key].Proj.Model(LS.UnitId), LS.Sym) then
       begin
         LAsk.UnitName := TPath.GetFileNameWithoutExtension(LModel);
         LAsk.Word := StripGenerics(LS.Name);
@@ -16224,7 +16244,10 @@ begin
       if (LA1.Error <> '') or (LA1.Verdict <> uvUnused) then
         Continue;
       LText := LA1.RowA.Proj.ModelFile(LA1.Row.UnitId);
-      if not SameText(ExtractFileExt(LText), '.pas') then
+      // A local or a parameter: no other file can name it.
+      if not SameText(ExtractFileExt(LText), '.pas') or
+         (LA1.Row.Kind = skParam) or
+         IsLocalDecl(LA1.RowA.Proj.Model(LA1.Row.UnitId), LA1.Row.Sym) then
         Continue;
       LAsk.UnitName := TPath.GetFileNameWithoutExtension(LText);
       LAsk.Word := StripGenerics(LA1.Row.Name);
@@ -16255,8 +16278,10 @@ begin
       case LA1.Verdict of
         uvUnused:
           begin
-            LText := Format('%s:%d:%d: unused %s (%s) - %s', [AWs.RelPath(
+            LText := Format('%s:%d:%d: unused %s (%s%s) - %s', [AWs.RelPath(
               LA1.Row.FileName), LA1.Row.Line, LA1.Row.Col, LA1.Row.Name,
+              IfThen(IsLocalDecl(LA1.RowA.Proj.Model(LA1.Row.UnitId),
+              LA1.Row.Sym), 'local '),
               HeadOf(LA1.RowA.Proj.Model(LA1.Row.UnitId), LA1.Row.Sym),
               UnusedWhy(LA1.Row)]);
             LWhy := UnusedBut(LA1.Row);
@@ -16304,9 +16329,10 @@ end;
 
 const
   // The kinds of declaration unused-symbol rows are (TLintRow.Kind), in the
-  // order the header counts them.
-  LINT_KINDS: array[0..5] of string = ('type', 'routine', 'var', 'const',
-    'field', 'property');
+  // order the header counts them. `local` is no kind of its own: a routine's
+  // var, const or type (TLintRow.Local), counted again apart.
+  LINT_KINDS: array[0..6] of string = ('type', 'routine', 'var', 'const',
+    'field', 'property', 'local');
 
 // `kinds` of `lint`: names joined by commas (or a list written as JSON in
 // the string), each one of LINT_KINDS or a word an agent writes for one -
@@ -16331,13 +16357,22 @@ begin
     else if MatchText(LK, ['constant', 'consts', 'constants']) then
       LK := 'const'
     else if MatchText(LK, ['fields', 'properties']) then
-      LK := IfThen(LK = 'fields', 'field', 'property');
+      LK := IfThen(LK = 'fields', 'field', 'property')
+    else if MatchText(LK, ['locals']) then
+      LK := 'local';
     if not MatchText(LK, LINT_KINDS) then
       raise EToolError.CreateFmt('unknown kind `%s` - the kinds: %s',
         [LPart.Trim, string.Join(', ', LINT_KINDS)]);
     if not MatchText(LK, Result) then
       Result := Result + [LK];
   end;
+end;
+
+// The record a field row's qualified name (TPasUnusedSymbol.Name) sits in:
+// all before its last dot.
+function RecordOfField(const AName: string): string;
+begin
+  Result := Copy(AName, 1, LastDelimiter('.', AName) - 1);
 end;
 
 // The rows `sure` and `kinds` leave: no `but` (any rule), and an
@@ -16352,7 +16387,8 @@ begin
   LN := 0;
   for var LRow in ARows do
     if not (ASure and LRow.Doubt) and ((AKinds = nil) or
-       (LRow.Rule <> LINT_UNUSED_SYMBOL) or MatchText(LRow.Kind, AKinds)) then
+       (LRow.Rule <> LINT_UNUSED_SYMBOL) or MatchText(LRow.Kind, AKinds) or
+       (LRow.Local and MatchText('local', AKinds))) then
     begin
       Result[LN] := LRow;
       Inc(LN);
@@ -16710,6 +16746,273 @@ begin
   end;
 end;
 
+type
+  { lint's `diff` (0.66.0): what a change touched, read from `git diff`
+    output (ParseDiff, as `impact` reads it). The rows kept are those a
+    cleanup after an edit is about - the client session that asked for it
+    got 94 rows on two units, 14 of them `uses` entries unused for years and
+    76 old record fields, around the 4 its change left dead. }
+  TLintDiff = class
+  public
+    Files: TList<string>;                  // the .pas files on disk it changes
+    Plus: TDictionary<string, Boolean>;    // 'file|line' (lower): added lines
+    Removed: TDictionary<string, Boolean>; // 'file|word' (lower): a removed
+                                           // line's identifiers
+    Words: TDictionary<string, Boolean>;   // the same words, any file
+    WordFiles: TDictionary<string, TArray<string>>; // word: files removing it
+    NewNames: TDictionary<string, Boolean>; // 'file|word': written more on
+                                            // added lines than removed ones
+    Lines: Integer;                        // changed lines of code, + and -
+    constructor Create;
+    destructor Destroy; override;
+    function Added(const AFile: string; ALine: Integer): Boolean;
+    function RemovedIn(const AFile, AWord: string): Boolean;
+  end;
+
+constructor TLintDiff.Create;
+begin
+  inherited Create;
+  Files := TList<string>.Create;
+  Plus := TDictionary<string, Boolean>.Create;
+  Removed := TDictionary<string, Boolean>.Create;
+  Words := TDictionary<string, Boolean>.Create;
+  WordFiles := TDictionary<string, TArray<string>>.Create;
+  NewNames := TDictionary<string, Boolean>.Create;
+end;
+
+destructor TLintDiff.Destroy;
+begin
+  NewNames.Free;
+  WordFiles.Free;
+  Words.Free;
+  Removed.Free;
+  Plus.Free;
+  Files.Free;
+  inherited;
+end;
+
+function TLintDiff.Added(const AFile: string; ALine: Integer): Boolean;
+begin
+  Result := Plus.ContainsKey(LowerCase(AFile) + '|' + IntToStr(ALine));
+end;
+
+function TLintDiff.RemovedIn(const AFile, AWord: string): Boolean;
+begin
+  Result := Removed.ContainsKey(LowerCase(AFile) + '|' + LowerCase(AWord));
+end;
+
+// Below, beside ParseDiff and the types it fills.
+function LintDiffOf(AWs: TMcpWorkspace; const AText: string): TLintDiff;
+  forward;
+
+// Could a removed line of AFile have used a declaration of AUnitFile: the
+// same file, or AFile's `uses` lists that unit (in any analysis). A member
+// reached through a value of a type from a unit AFile does not list is
+// missed - the price of not keeping every `Name` and `Create` some removed
+// line wrote: on a client diff of 29 files, 220 rows in 92 units otherwise.
+function DiffSees(AWs: TMcpWorkspace; const AFile, AUnitFile: string): Boolean;
+begin
+  if SameText(AFile, AUnitFile) then
+    Exit(True);
+  for var LA in AWs.Analyses do
+  begin
+    if LA.Proj = nil then
+      Continue;
+    var LMid := LA.Nav.ModelIdOf(AFile);
+    if LMid < 0 then
+      Continue;
+    for var LU in LA.Proj.Model(LMid).UsesList do
+      if (LU.UnitId >= 0) and (LU.UnitId < LA.Proj.ModelCount) and
+         SameText(LA.Proj.ModelFile(LU.UnitId), AUnitFile) then
+        Exit(True);
+  end;
+  Result := False;
+end;
+
+// A removed line of a file that sees AUnitFile wrote AWord.
+function DiffRemovedFor(AWs: TMcpWorkspace; ADiff: TLintDiff;
+  const AWord, AUnitFile: string): Boolean;
+var
+  LAt: TArray<string>;
+begin
+  Result := False;
+  if ADiff.WordFiles.TryGetValue(LowerCase(AWord), LAt) then
+    for var LF in LAt do
+      if DiffSees(AWs, LF, AUnitFile) then
+        Exit(True);
+end;
+
+{ The own units a diff's removed names are declared in, beyond its own files:
+  a routine whose last call the change removed lives elsewhere as often as
+  not. A name declared in more than 10 own units (Count, Name) is too common
+  to say anything and adds none. }
+function LintDiffUnits(AWs: TMcpWorkspace; ADiff: TLintDiff): TArray<string>;
+var
+  LAt: TDictionary<string, TArray<string>>;
+  LSeen: TDictionary<string, Boolean>;
+  LList: TArray<string>;
+begin
+  Result := nil;
+  if ADiff.Words.Count = 0 then
+    Exit;
+  LAt := TDictionary<string, TArray<string>>.Create;
+  LSeen := TDictionary<string, Boolean>.Create;
+  try
+    for var LA in AWs.Analyses do
+      if LA.Proj <> nil then
+        for var LMid := 0 to LA.Proj.ModelCount - 1 do
+        begin
+          var LPath := LA.Proj.ModelFile(LMid);
+          if not SameText(ExtractFileExt(LPath), '.pas') or
+             not AWs.IsOwnFile(LPath) or LA.Proj.IsLight(LMid) or
+             not LSeen.TryAdd(LowerCase(LPath), True) then
+            Continue;
+          var LM := LA.Proj.Model(LMid);
+          if LM = nil then
+            Continue;
+          for var LSym := 0 to LM.SymCount - 1 do
+          begin
+            var LS := LM.Symbols[LSym];
+            if (LS.NameLower = '') or not ADiff.Words.ContainsKey(LS.NameLower)
+               or (LS.Scope < 0) or (LS.Scope >= LM.Scopes.Count) or
+               not (LM.Scopes[LS.Scope].Kind in [sckUnit, sckImplementation,
+               sckStruct]) then
+              Continue;
+            if not LAt.TryGetValue(LS.NameLower, LList) then
+              LList := nil;
+            if not MatchText(LPath, LList) then
+              LAt.AddOrSetValue(LS.NameLower, LList + [LPath]);
+          end;
+        end;
+    LSeen.Clear;
+    for var LF in ADiff.Files do
+      LSeen.AddOrSetValue(LowerCase(LF), True);
+    for var LP in LAt do
+    begin
+      var LSees: TArray<string> := nil;
+      for var LF in LP.Value do
+        if DiffRemovedFor(AWs, ADiff, LP.Key, LF) then
+          LSees := LSees + [LF];
+      if Length(LSees) <= 10 then
+        for var LF in LSees do
+          if LSeen.TryAdd(LowerCase(LF), True) then
+            Result := Result + [LF];
+    end;
+  finally
+    LSeen.Free;
+    LAt.Free;
+  end;
+end;
+
+{ The rows of ARows a change touches (ADiff): a declaration or `uses` entry
+  on an added line whose name the change adds (NewNames - not a line merely
+  rewritten);
+  a declaration or `uses` entry the change left unused - its name, or for an
+  entry a name its unit declares, written on a removed line of the file (for
+  a declaration, of a file that sees its unit - DiffSees); and, to a fixed
+  point, the rows that go with
+  those (an unused-symbol row's By, an unused-uses entry needed only by
+  them). }
+function LintDiffRows(AWs: TMcpWorkspace; ADiff: TLintDiff;
+  const ARows: TArray<TLintRow>): TArray<TLintRow>;
+var
+  LKeep: TArray<Boolean>;
+  LNames: TDictionary<string, Boolean>;
+  LChanged: Boolean;
+
+  function LastSegment(const AName: string): string;
+  begin
+    Result := StripGenerics(AName);
+    if LastDelimiter('.', Result) > 0 then
+      Result := Copy(Result, LastDelimiter('.', Result) + 1, MaxInt);
+  end;
+
+  // An entry's unit declares, in its interface, a name a removed line of the
+  // file listing it wrote.
+  function EntryLeft(const ARow: TLintRow): Boolean;
+  begin
+    Result := False;
+    for var LA in AWs.Analyses do
+    begin
+      if LA.Proj = nil then
+        Continue;
+      if LA.Nav.ModelIdOf(ARow.FilePath) < 0 then
+        Continue;
+      // The entry's unit by its name - or a namespace's unit it is the
+      // short name of (Classes: System.Classes).
+      var LUnit := -1;
+      var LEntry := LowerCase(ARow.Entry);
+      for var LMid := 0 to LA.Proj.ModelCount - 1 do
+        if (LA.Proj.Model(LMid) <> nil) and
+           ((LA.Proj.Model(LMid).UnitNameLower = LEntry) or
+           LA.Proj.Model(LMid).UnitNameLower.EndsWith('.' + LEntry)) then
+        begin
+          LUnit := LMid;
+          Break;
+        end;
+      if (LUnit < 0) or not LA.Proj.EnsureHydrated(LUnit) then
+        Continue;
+      var LM := LA.Proj.Model(LUnit);
+      for var LSym := 0 to LM.SymCount - 1 do
+        if (LM.Symbols[LSym].Scope >= 0) and
+           (LM.Symbols[LSym].Scope < LM.Scopes.Count) and
+           (LM.Scopes[LM.Symbols[LSym].Scope].Kind = sckUnit) and
+           ADiff.RemovedIn(ARow.FilePath, LM.Symbols[LSym].NameLower) then
+          Exit(True);
+    end;
+  end;
+
+begin
+  SetLength(LKeep, Length(ARows));
+  LNames := TDictionary<string, Boolean>.Create;
+  try
+    for var LI := 0 to High(ARows) do
+    begin
+      var LRow := ARows[LI];
+      // On an added line, and its name new there (not a line rewritten).
+      var LOwn := LRow.Entry;
+      if LRow.Rule = LINT_UNUSED_SYMBOL then
+        LOwn := LRow.Sym.Name;
+      if ADiff.Added(LRow.FilePath, LRow.Line) and
+         ADiff.NewNames.ContainsKey(LowerCase(LRow.FilePath) + '|' +
+         LowerCase(LastSegment(LOwn))) then
+        LKeep[LI] := True
+      else if LRow.Rule = LINT_UNUSED_SYMBOL then
+        LKeep[LI] := DiffRemovedFor(AWs, ADiff, LastSegment(LRow.Sym.Name),
+          LRow.FilePath)
+      else if LRow.Entry <> '' then
+        LKeep[LI] := EntryLeft(LRow);
+      if LKeep[LI] and (LRow.Rule = LINT_UNUSED_SYMBOL) then
+        LNames.AddOrSetValue(LowerCase(LRow.Sym.Name), True);
+    end;
+    repeat
+      LChanged := False;
+      for var LI := 0 to High(ARows) do
+        if not LKeep[LI] then
+        begin
+          var LBy := ARows[LI].By;
+          if ARows[LI].Rule = LINT_UNUSED_SYMBOL then
+            LBy := ARows[LI].Sym.By;
+          for var LB in LBy do
+            if LNames.ContainsKey(LowerCase(LB)) then
+            begin
+              LKeep[LI] := True;
+              LChanged := True;
+              if ARows[LI].Rule = LINT_UNUSED_SYMBOL then
+                LNames.AddOrSetValue(LowerCase(ARows[LI].Sym.Name), True);
+              Break;
+            end;
+        end;
+    until not LChanged;
+  finally
+    LNames.Free;
+  end;
+  Result := nil;
+  for var LI := 0 to High(ARows) do
+    if LKeep[LI] then
+      Result := Result + [ARows[LI]];
+end;
+
 function ToolLint(AWs: TMcpWorkspace; AArgs: TJSONObject): string;
 var
   LRules, LAskedFiles: TArray<string>;
@@ -16729,8 +17032,15 @@ var
   LEnclosing: TEnclosing;
   LSb: TStringBuilder;
   LByRule, LByFile: TDictionary<string, Integer>;
+  LDiffText: string;
+  LDiff: TLintDiff;
+  LDiffHeld, LDiffAll: Integer;
+  LDiffMore: TArray<string>;
 begin
   LRules := nil;
+  LDiff := nil;
+  LDiffMore := nil;
+  LDiffAll := 0;
   // A list written as JSON inside the string - `"[\"unused-uses\"]"` - is
   // the list (an agent's call on the client group, refused three times).
   for var LR in ArgStr(AArgs, 'rules').Split([',', ' ', '[', ']', '"'],
@@ -16749,6 +17059,11 @@ begin
     if LSure or (LKinds <> nil) then
       raise EToolError.Create('`sure` and `kinds` narrow the rows of units - '
         + 'with `symbol` each declaration named answers, its `but` with it');
+    if (AArgs.GetValue('diff') <> nil) and
+       not (AArgs.GetValue('diff') is TJSONNull) then
+      raise EToolError.Create('`diff` narrows the rows of the units it '
+        + 'changes - with `symbol` each declaration named answers; give one '
+        + 'or the other');
     if (LRules <> nil) and ((Length(LRules) > 1) or
        not SameText(LRules[0], LINT_UNUSED_SYMBOL)) then
       raise EToolError.Create('`symbol` asks unused-symbol of the '
@@ -16762,6 +17077,10 @@ begin
   // `kinds` alone asks unused-symbol: the uses rules have no kinds.
   if (LRules = nil) and (LKinds <> nil) then
     LRules := [LINT_UNUSED_SYMBOL];
+  // `diff` alone: the cleanup after a change - what it left unused.
+  if (LRules = nil) and (AArgs.GetValue('diff') <> nil) and
+     not (AArgs.GetValue('diff') is TJSONNull) then
+    LRules := [LINT_UNUSED_USES, LINT_UNUSED_SYMBOL];
   if LRules = nil then
     LRules := LINT_RULES;
   LUnused := MatchText(LINT_UNUSED_USES, LRules);
@@ -16781,6 +17100,37 @@ begin
     raise EToolError.Create('`kinds` narrows the rows of unused-symbol - '
       + 'add it to `rules`');
   LAskedFiles := LintFilesArg(AWs, AArgs);
+  // `diff`: its own units and those declaring a name it removed are checked,
+  // and the rows it touches listed (LintDiffRows). Not trimmed: a hunk's
+  // last context line may be a lone space.
+  LDiffText := '';
+  if (AArgs.GetValue('diff') <> nil) and
+     not (AArgs.GetValue('diff') is TJSONNull) then
+    LDiffText := AArgs.GetValue('diff').Value;
+  if Trim(LDiffText) <> '' then
+  begin
+    LDiff := LintDiffOf(AWs, LDiffText);
+    LDiffHeld := 0;
+    for var LF in LDiff.Files do
+      for var LA in AWs.Analyses do
+        if (LA.Proj <> nil) and (LA.Nav.ModelIdOf(LF) >= 0) then
+        begin
+          if not MatchText(LF, LAskedFiles) then
+            LAskedFiles := LAskedFiles + [LF];
+          Inc(LDiffHeld);
+          Break;
+        end;
+    if LDiffHeld = 0 then
+    begin
+      LDiff.Free;
+      raise EToolError.Create('the diff changes no unit any analysis holds - '
+        + 'lint reads the .pas files of the group; pass `git diff` of them');
+    end;
+    LDiffMore := LintDiffUnits(AWs, LDiff);
+    for var LF in LDiffMore do
+      if not MatchText(LF, LAskedFiles) then
+        LAskedFiles := LAskedFiles + [LF];
+  end;
   // LFile: the one file asked about, for the answer's wording.
   LFile := '';
   if Length(LAskedFiles) = 1 then
@@ -16862,6 +17212,19 @@ begin
     if LUnref then
       LintUnreferenced(AWs, LFiles.ToArray, LRows);
     LArr := LRows.ToArray;
+    if LDiff <> nil then
+    begin
+      LDiffAll := Length(LArr);
+      LArr := LintDiffRows(AWs, LDiff, LArr);
+      LSb.AppendLine(Format('diff: %s, %d changed lines of code, %s it '
+        + 'removes more often than it adds%s - the rows its added lines '
+        + 'declare, what its removals left unused, and what goes with them: '
+        + '%d of the %d rows of the units checked', [Plural(LDiff.Files.Count,
+        'file'), LDiff.Lines, Plural(LDiff.Words.Count, 'name'),
+        IfThen(LDiffMore <> nil,
+        Format('; %s declaring one checked too', [Plural(Length(LDiffMore),
+        'unit')]), ''), Length(LArr), LDiffAll]));
+    end;
     // Written before the rows are listed: they say what was there.
     LApplied := '';
     if LApply then
@@ -16909,7 +17272,7 @@ begin
         begin
           LN := 0;
           for var LRow in LArr do
-            if LRow.Kind = LK then
+            if (LRow.Kind = LK) or ((LK = 'local') and LRow.Local) then
               Inc(LN);
           if LN > 0 then
             LKey := LKey + IfThen(LKey <> '', ', ') + Format('%s %d', [LK, LN]);
@@ -16950,23 +17313,60 @@ begin
           IfThen(LSure, ',', ' -') + ' unused-symbol of kind ' +
           string.Join(', ', LKinds), '')]));
     end;
+    // A record's fields that are rows with one `but` (read or written
+    // whole) are one line per record, unless `kinds` asks for fields: on the
+    // client group 76 of a cleanup's 80 rows were three old record layouts'
+    // fields, the 4 routines it was after lost among them.
     LShown := 0;
     LLines := nil;
     LButs := nil;
-    for var LRow in LArr do
+    var LFold := not MatchText('field', LKinds);
+    var LIdx := 0;
+    var LOmitted := 0;
+    while LIdx < Length(LArr) do
     begin
+      var LRow := LArr[LIdx];
+      var LTo := LIdx;
+      if LFold and LRow.Sym.RecordField and LRow.Doubt then
+        while (LTo + 1 < Length(LArr)) and
+              LArr[LTo + 1].Sym.RecordField and
+              (LArr[LTo + 1].Rule = LRow.Rule) and
+              SameText(LArr[LTo + 1].FilePath, LRow.FilePath) and
+              (LArr[LTo + 1].But = LRow.But) and
+              SameText(RecordOfField(LArr[LTo + 1].Sym.Name),
+                RecordOfField(LRow.Sym.Name)) do
+          Inc(LTo);
       if LShown >= LLimit then
-        Break;
-      LLines := LLines + [Format('%s:%d:%d: %s %s', [AWs.RelPath(
-        LRow.FilePath), LRow.Line, LRow.Col, LRow.Rule, LRow.Text])];
+      begin
+        Inc(LOmitted, LTo - LIdx + 1);
+        LIdx := LTo + 1;
+        Continue;
+      end;
+      if LTo > LIdx then
+      begin
+        var LNames: TArray<string> := nil;
+        for var LI := LIdx to LTo do
+          LNames := LNames + [Copy(LArr[LI].Sym.Name,
+            Length(RecordOfField(LArr[LI].Sym.Name)) + 2, MaxInt)];
+        var LList := string.Join(', ', Copy(LNames, 0, 8));
+        if Length(LNames) > 8 then
+          LList := LList + Format(' and %d more', [Length(LNames) - 8]);
+        LLines := LLines + [Format('%s:%d:%d: %s %s - %d of its fields: %s '
+          + '(`kinds`: field lists each)', [AWs.RelPath(LRow.FilePath),
+          LRow.Line, LRow.Col, LRow.Rule, RecordOfField(LRow.Sym.Name),
+          Length(LNames), LList])];
+      end
+      else
+        LLines := LLines + [Format('%s:%d:%d: %s %s', [AWs.RelPath(
+          LRow.FilePath), LRow.Line, LRow.Col, LRow.Rule, LRow.Text])];
       LButs := LButs + [LRow.But];
       Inc(LShown);
+      LIdx := LTo + 1;
     end;
     AppendButLines(LSb, LLines, LButs);
-    if (LShown < Length(LArr)) and (LLimit > 0) then
+    if (LOmitted > 0) and (LLimit > 0) then
       LSb.AppendLine(Format('... %d more (raise `limit`, or narrow with '
-        + '`file`, `in`, `rules`, `kinds` or `sure`)', [Length(LArr) -
-        LShown]));
+        + '`file`, `in`, `rules`, `kinds` or `sure`)', [LOmitted]));
     if LNotHeld <> '' then
       LSb.AppendLine('not a unit any analysis holds, not checked: ' + LNotHeld);
     if LSkipped <> '' then
@@ -16982,6 +17382,7 @@ begin
       LSb.AppendLine(LApplied);
     Result := LSb.ToString.TrimRight;
   finally
+    LDiff.Free;
     LByFile.Free;
     LByRule.Free;
     LSb.Free;
@@ -19142,6 +19543,99 @@ begin
     except
       // characters no path can hold: not this candidate
     end;
+end;
+
+function IsCodeText(const AText: string): Boolean; forward;
+
+// lint's `diff` (TLintDiff, declared beside ToolLint): the .pas files on
+// disk a diff changes, their added lines, and the identifiers of their
+// removed lines - string literals and `//` comments left out, and the
+// reserved words a removed line always has.
+function LintDiffOf(AWs: TMcpWorkspace; const AText: string): TLintDiff;
+const
+  RESERVED: array[0..37] of string = ('and', 'array', 'as', 'begin', 'case',
+    'class', 'const', 'div', 'do', 'downto', 'else', 'end', 'except',
+    'finally', 'for', 'function', 'if', 'in', 'inherited', 'is', 'mod', 'nil',
+    'not', 'of', 'or', 'procedure', 'record', 'repeat', 'result', 'self',
+    'then', 'to', 'try', 'type', 'until', 'var', 'while', 'with');
+var
+  LFiles: TArray<TDiffFile>;
+  LFull, LText, LWord: string;
+  LReserved: TDictionary<string, Boolean>;
+  LNet: TDictionary<string, Integer>;
+begin
+  LFiles := ParseDiff(AText);
+  if Length(LFiles) = 0 then
+    raise EToolError.Create('no file in `diff` - pass the output of `git '
+      + 'diff` as it is: `--- a/<path>` and `+++ b/<path>` lines, then `@@` '
+      + 'hunks');
+  Result := TLintDiff.Create;
+  LReserved := TDictionary<string, Boolean>.Create;
+  LNet := TDictionary<string, Integer>.Create;
+  try
+    for var LR in RESERVED do
+      LReserved.Add(LR, True);
+    for var LD in LFiles do
+    begin
+      if (LD.NewPath = '') or not SameText(ExtractFileExt(DiffShown(
+         LD.NewPath)), '.pas') then
+        Continue;
+      LFull := DiffFileOnDisk(AWs, LD.NewPath);
+      if LFull = '' then
+        Continue;
+      if not MatchText(LFull, Result.Files.ToArray) then
+        Result.Files.Add(LFull);
+      // Per word, how many more times the removed lines write it than the
+      // added ones: a line rewritten (a call moved, a `uses` clause the IDE
+      // reflowed, `Patient` renamed around) names its words on both sides
+      // and leaves nothing - on a client diff of 29 files, 153 of 183 rows
+      // were unused before the change, kept by such words.
+      LNet.Clear;
+      for var LL in LD.Lines do
+      begin
+        if (LL.Kind = ' ') or not IsCodeText(LL.Text) then
+          Continue;
+        Inc(Result.Lines);
+        if LL.Kind = '+' then
+          Result.Plus.AddOrSetValue(LowerCase(LFull) + '|' +
+            IntToStr(LL.Line), True);
+        // Its names: outside string literals and a comment.
+        LText := LL.Text;
+        if Pos('//', LText) > 0 then
+          LText := Copy(LText, 1, Pos('//', LText) - 1);
+        LText := TRegEx.Replace(LText, '''[^'']*''', ' ');
+        for var LM in TRegEx.Matches(LText, '[A-Za-z_][A-Za-z0-9_]*') do
+        begin
+          LWord := LowerCase(LM.Value);
+          if (Length(LWord) < 2) or LReserved.ContainsKey(LWord) then
+            Continue;
+          var LN: Integer;
+          if not LNet.TryGetValue(LWord, LN) then
+            LN := 0;
+          LNet.AddOrSetValue(LWord, LN + IfThen(LL.Kind = '-', 1, -1));
+        end;
+      end;
+      for var LP in LNet do
+        if LP.Value < 0 then
+          Result.NewNames.AddOrSetValue(LowerCase(LFull) + '|' + LP.Key, True)
+        else if (LP.Value > 0) and
+          Result.Removed.TryAdd(LowerCase(LFull) + '|' + LP.Key, True) then
+        begin
+          var LAt: TArray<string>;
+          if not Result.WordFiles.TryGetValue(LP.Key, LAt) then
+            LAt := nil;
+          Result.WordFiles.AddOrSetValue(LP.Key, LAt + [LFull]);
+          Result.Words.AddOrSetValue(LP.Key, True);
+        end;
+    end;
+  except
+    Result.Free;
+    LNet.Free;
+    LReserved.Free;
+    raise;
+  end;
+  LNet.Free;
+  LReserved.Free;
 end;
 
 // Is a changed line code, rather than blank or a comment alone? Read from the
@@ -22772,7 +23266,9 @@ const
     + 'every unit''s), the bindings a move would change. A move row names the {$IF} blocks '
     + 'the entry is written in: move it with them. unused-symbol (asked by '
     + 'name): a declaration - type, routine, variable, constant, field, '
-    + 'property - nothing in the group uses, by name, a bare inherited or a '
+    + 'property, and a routine''s local constant, type or variable (one only '
+    + 'a dead nested routine reads goes with it; dcc hints none of these '
+    + 'but an unmanaged variable) - nothing in the group uses, by name, a bare inherited or a '
     + 'form file; what is reached another way is not weighed and counted '
     + '(published members, virtual and interface methods, attributes, '
     + 'for-in, and the exported interface of a package''s unit or of a '
@@ -22787,7 +23283,13 @@ const
     + 'unused, used, or not weighed and why (a virtual method: `callers`); a '
     + 'name several own declarations have answers for each, with its place. '
     + '`sure` lists only the rows with no `but`, `kinds` '
-    + 'the unused-symbol rows of those kinds (routine, type, field...). '
+    + 'the unused-symbol rows of those kinds (routine, type, field, local...); '
+    + 'the fields of one record sharing a `but` (read or written whole) are '
+    + 'one line unless `kinds` names field. `diff` (the output of `git '
+    + 'diff`) is the cleanup after a change: its units and those declaring '
+    + 'a name it removed are checked, and listed are the declarations its '
+    + 'added lines make, the declarations and `uses` entries its removals '
+    + 'left unused, and what goes with them - not what was unused before. '
     + 'unreferenced-units (asked by name): an own unit no program of the '
     + 'group reaches but through unused `uses` entries - it goes once they '
     + 'do (a unit whose initialization registers something is never '
@@ -22817,7 +23319,12 @@ const
     + '`but` - safe to act on (the header still counts all)"},'
     + '"kinds":{"type":"string","description":"unused-symbol rows only of '
     + 'these kinds, joined by commas: type, routine, var, const, field, '
-    + 'property (the header counts each); alone, asks unused-symbol"},'
+    + 'property, local (a routine''s var, const or type; the header counts '
+    + 'each); alone, asks unused-symbol"},'
+    + '"diff":{"type":"string","description":"The output of `git diff` (or '
+    + '`git diff HEAD`): only the rows the change made - declared on its '
+    + 'added lines, left unused by its removed ones, and what goes with them. '
+    + 'Alone, asks unused-uses and unused-symbol"},'
     + '"symbol":{"description":"unused-symbol of these declarations alone: '
     + 'names (TFoo.Bar) joined by commas, or a list of names and '
     + '{\"file\",\"line\",\"name\"}; an overloaded name is each overload, a '

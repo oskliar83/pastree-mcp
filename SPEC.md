@@ -1296,6 +1296,55 @@ gap between the answers and the truth.
      can only use what is exported, so those rows said nothing an agent
      could act on without reading every host: the `but`, `"hosts"` and the
      split are gone.
+
+     The first field report on the rule (2026-11-19, a cleanup after
+     simplifying an upgrade procedure on the client group) found no false
+     row, but three gaps, each answered in 0.66.0 (PasTree 0.213.0):
+     - Locals. A whole run left them to dcc, which hints none of a local
+       constant or type, none of a managed variable (a string, an
+       interface, a dynamic array - initialized and finalized, so "used"),
+       and none of one only a dead nested routine reads. The session's four
+       dead nested and unit routines were rows; the five constants around
+       them (four never read, one read only by the dead routines and by
+       another dead constant's value) the agent removed by eye. A run now
+       weighs the locals of the units asked (`uoLocals`, with local types):
+       a use inside a nested routine that is a row, or inside another dead
+       local's declaration, is a use by it, so the chain dies whole; a
+       local of a routine that is a row, and a member of a local type that
+       is one, is not listed. The rows read "(local const)", and `kinds`
+       takes `local`. Found on the way: a local constant or type was never
+       a row, even asked by `symbol` - its declaration's name carries no
+       `nfName` and read as its own use. On the whole client group 341 of
+       12,562 rows are locals; the warm whole-group run takes about 13 s,
+       10 s without them - 15 s at first, until a parameter a local is
+       passed into was weighed only once read nowhere (its `AddressTaken`
+       searches the group) and an argument to a library routine counted as
+       a read. Replayed on the session's two
+       units as they were before its cleanup (Claude Code's file history):
+       all nine declarations it removed are rows, `CMinutesPerDay` "used
+       only by unused LastModifiedMinutes, AVIMinutes, ...CMaxStayMinutes".
+     - Noise. 76 of its 80 rows were the fields of three old record
+       layouts, each with the same `but` (read or written whole). Such
+       fields are one line per record now - "Animal_record_2011_1 - 42 of
+       its fields: ..." - unless `kinds` names field.
+     - The change. Its 94 findings held 14 `uses` entries unused for years
+       around the one its change left. `diff` takes `git diff` output and
+       lists what the change made: a declaration or entry on an added line
+       whose name the change adds, one its removals left unused, and what
+       goes with them. "Left unused" is read from the text, not from an
+       analysis of the old files: a name the file's removed lines write
+       more often than its added ones (a line rewritten, a `uses` clause
+       the IDE reflowed, a property used elsewhere in the same file leave
+       nothing), in a file that is the declaration's unit or lists it (a
+       member reached through a value of a type from a unit the file does
+       not list is missed). The units declaring such a name are checked
+       with the diff's own. On the session's whole working tree (29 files,
+       1,160 changed lines) the first reading - any name on any removed
+       line - kept 183 rows, 153 of them unused before the change (the
+       units at HEAD, the same run); the balance and the `uses` condition
+       keep 44, 14 of them so, and every one of the 30 the change made -
+       the session's ten among them, and its new unused `Duration` and
+       `_Appointment` properties.
    - `const-param` - a `string`, dynamic array, interface or large record
      parameter passed by value and never assigned in the body. The classic
      Delphi saving: no reference count or copy per call.
